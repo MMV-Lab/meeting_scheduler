@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3001;
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, '../client/build')));
+app.use(express.static(path.join(__dirname, '../build')));
 
 // Global variables
 const PASSCODE = "BiospecParty";
@@ -353,7 +353,7 @@ app.get('/api/admin/export-members', (req, res) => {
 
 // Serve React app
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/build/index.html'));
+  res.sendFile(path.join(__dirname, '../build/index.html'));
 });
 
 app.listen(PORT, () => {

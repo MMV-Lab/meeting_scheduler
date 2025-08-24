@@ -16,6 +16,7 @@ env.example
 client/build/
 dist/
 build/
+client/
 
 # Runtime data
 pids
