@@ -10,7 +10,8 @@
     "build": "cd client && npm install && npm run build",
     "start": "node server/index.js",
     "install-all": "npm install && cd client && npm install",
-    "vercel-build": "cd client && npm install && npm run build"
+    "vercel-build": "cd client && npm install && npm run build",
+    "vercel-build-alt": "npm install && cd client && npm install && npm run build"
   },
   "keywords": ["meeting", "scheduler", "presentation"],
   "author": "Biospec Group",
