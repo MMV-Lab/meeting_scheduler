@@ -377,7 +377,7 @@ function App() {
 
         <div className="schedule-table">
           <div className="table-header">
-            <h2>Presentation Schedule</h2>
+            <h2>🚀 Presentation Schedule 🕐</h2>
           </div>
           {schedule.map((meeting, index) => (
             <div key={index} className="table-row">
