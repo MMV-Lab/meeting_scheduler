@@ -12,6 +12,7 @@ function App() {
   const [showSwapModal, setShowSwapModal] = useState(false);
   const [showSkipModal, setShowSkipModal] = useState(false);
   const [showDateChangeModal, setShowDateChangeModal] = useState(false);
+  const [showTimeChangeModal, setShowTimeChangeModal] = useState(false);
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState(null);
   const [swapData, setSwapData] = useState({
@@ -21,6 +22,7 @@ function App() {
     presenter2: ''
   });
   const [newDate, setNewDate] = useState('');
+  const [newTime, setNewTime] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -178,6 +180,39 @@ function App() {
     }
   };
 
+  const handleChangeTime = async () => {
+    if (!selectedMeeting || !newTime) return;
+    
+    try {
+      const response = await fetch('/api/change-time', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          date: selectedMeeting.date, 
+          newTime: newTime,
+          adminPasscode: "AdminChen01234"
+        }),
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        setSchedule(data.schedule);
+        setShowTimeChangeModal(false);
+        setSelectedMeeting(null);
+        setNewTime('');
+        setSuccessMessage('Meeting time changed successfully!');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message);
+      }
+    } catch (error) {
+      setErrorMessage('An error occurred while changing the meeting time.');
+    }
+  };
+
   // Admin functions
   const updateMembers = async (newMembers) => {
     setIsLoading(true);
@@ -275,6 +310,13 @@ function App() {
     setErrorMessage('');
   };
 
+  const openTimeChangeModal = (meeting) => {
+    setSelectedMeeting(meeting);
+    setNewTime(meeting.time || '09:00');
+    setShowTimeChangeModal(true);
+    setErrorMessage('');
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="login-container">
@@ -342,6 +384,18 @@ function App() {
               <div className="table-cell date-cell">
                 <Calendar size={18} />
                 {format(new Date(meeting.date), 'MMM dd, yyyy')}
+              </div>
+              <div className="table-cell time-cell">
+                <span className="time-display">{meeting.time || '09:00'}</span>
+                {isAdmin && (
+                  <button
+                    className="time-edit-btn"
+                    onClick={() => openTimeChangeModal(meeting)}
+                    title="Change meeting time"
+                  >
+                    <Edit3 size={14} />
+                  </button>
+                )}
               </div>
               <div className="table-cell presenter-cell">
                 <Users size={18} />
@@ -546,6 +600,47 @@ function App() {
                 disabled={!newDate}
               >
                 Change Date
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Change Time Modal */}
+      {showTimeChangeModal && (
+        <div className="modal-overlay" onClick={() => setShowTimeChangeModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">Change Meeting Time</h3>
+              <button className="close-button" onClick={() => setShowTimeChangeModal(false)}>
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div className="form-group">
+              <label className="form-label">New Time</label>
+              <input
+                type="time"
+                className="form-input"
+                value={newTime}
+                onChange={(e) => setNewTime(e.target.value)}
+              />
+            </div>
+            
+            <p>Changing the meeting time only affects this specific meeting.</p>
+            
+            {errorMessage && <div className="error-message">{errorMessage}</div>}
+            
+            <div className="modal-actions">
+              <button className="btn btn-secondary" onClick={() => setShowTimeChangeModal(false)}>
+                Cancel
+              </button>
+              <button 
+                className="btn btn-primary" 
+                onClick={handleChangeTime}
+                disabled={!newTime}
+              >
+                Change Time
               </button>
             </div>
           </div>

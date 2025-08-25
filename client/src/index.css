@@ -216,6 +216,37 @@ code {
   font-weight: 600;
 }
 
+.time-cell {
+  color: #764ba2;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.time-display {
+  font-family: 'Courier New', monospace;
+  font-size: 1.1rem;
+}
+
+.time-edit-btn {
+  background: rgba(118, 75, 162, 0.1);
+  border: none;
+  border-radius: 6px;
+  padding: 0.25rem;
+  cursor: pointer;
+  color: #764ba2;
+  transition: all 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.time-edit-btn:hover {
+  background: rgba(118, 75, 162, 0.2);
+  transform: scale(1.1);
+}
+
 .presenter-cell {
   color: #333;
 }

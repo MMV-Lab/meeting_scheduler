@@ -56,6 +56,7 @@ function generateSchedule(startDate = new Date('2025-09-08')) {
     
     schedule.push({
       date: meetingDate.toISOString().split('T')[0],
+      time: '09:00',
       presenter1: shuffledMembers[i].name,
       presenter2: shuffledMembers[i + 1] ? shuffledMembers[i + 1].name : 'TBD',
       presenter1Email: shuffledMembers[i].email,
@@ -97,7 +98,7 @@ function checkAndUpdateSchedule() {
     
     if (nextMeeting) {
       // Send reminder to everyone
-      const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${nextMeeting.date}\nPresenters: ${nextMeeting.presenter1} and ${nextMeeting.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
+      const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${nextMeeting.date}\nTime: ${nextMeeting.time}\nPresenters: ${nextMeeting.presenter1} and ${nextMeeting.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
       
       groupMembers.forEach(member => {
         sendEmail(member.email, 'Biospec Group Meeting Reminder', reminderText);
@@ -261,6 +262,32 @@ app.post('/api/change-date', (req, res) => {
   }
   
   console.log(`Meeting date changed: ${oldDate} -> ${newDate}. Schedule updated.`);
+  res.json({ success: true, schedule: presentationSchedule });
+});
+
+app.post('/api/change-time', (req, res) => {
+  const { date, newTime, adminPasscode } = req.body;
+  
+  // Verify admin access
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  
+  const meetingIndex = presentationSchedule.findIndex(meeting => meeting.date === date);
+  if (meetingIndex === -1) {
+    return res.status(400).json({ success: false, message: 'Meeting date not found' });
+  }
+  
+  // Validate time format (HH:MM)
+  const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+  if (!timeRegex.test(newTime)) {
+    return res.status(400).json({ success: false, message: 'Invalid time format. Use HH:MM (e.g., 09:00, 14:30)' });
+  }
+  
+  // Update the meeting time
+  presentationSchedule[meetingIndex].time = newTime;
+  
+  console.log(`Meeting time changed: ${date} -> ${newTime}.`);
   res.json({ success: true, schedule: presentationSchedule });
 });
 
