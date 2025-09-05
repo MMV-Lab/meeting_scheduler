@@ -243,6 +243,120 @@ function App() {
     }
   };
 
+  const addMember = async (member) => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/add-member', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ member, adminPasscode: 'AdminChen01234' })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setMembers(data.members);
+        setSuccessMessage('Member added');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to add member');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while adding member.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const removeMember = async (name) => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/remove-member', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, adminPasscode: 'AdminChen01234' })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setMembers(data.members);
+        setSchedule(data.schedule);
+        setSuccessMessage('Member removed');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to remove member');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while removing member.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const refillSchedule = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/refill-schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPasscode: 'AdminChen01234' })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSchedule(data.schedule);
+        setSuccessMessage('Schedule refilled');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to refill schedule');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while refilling schedule.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const sendPresenterReminder = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/send-presenter-reminder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPasscode: 'AdminChen01234' })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccessMessage('Presenter reminder sent');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to send presenter reminder');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while sending presenter reminder.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const sendEveryoneReminder = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/send-everyone-reminder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPasscode: 'AdminChen01234' })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccessMessage('Everyone reminder sent');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to send reminder to everyone');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while sending everyone reminder.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const exportMembers = async () => {
     try {
       const response = await fetch(`/api/admin/export-members?adminPasscode=AdminChen01234`);
@@ -732,6 +846,35 @@ function App() {
               >
                 Copy to Clipboard
               </button>
+            </div>
+
+            <div className="admin-section">
+              <h4>👥 Current Members</h4>
+              <ul style={{ listStyle: 'none', paddingLeft: 0 }}>
+                {members.map((m) => (
+                  <li key={m.email} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.25rem 0' }}>
+                    <span>{m.name} — <span style={{ opacity: 0.7 }}>{m.email}</span></span>
+                    <button className="btn btn-secondary" onClick={() => removeMember(m.name)}>Remove</button>
+                  </li>
+                ))}
+              </ul>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <input className="form-input" placeholder="Full name" id="newMemberName" />
+                <input className="form-input" placeholder="Email" id="newMemberEmail" />
+                <button className="btn btn-primary" onClick={() => {
+                  const name = document.getElementById('newMemberName').value.trim();
+                  const email = document.getElementById('newMemberEmail').value.trim();
+                  if (!name || !email) { setErrorMessage('Name and email are required'); return; }
+                  addMember({ name, email });
+                }}>Add</button>
+              </div>
+            </div>
+
+            <div className="admin-section">
+              <h4>🔄 Maintenance</h4>
+              <button className="btn btn-secondary" onClick={refillSchedule} style={{ marginRight: '1rem' }}>Refill Schedule</button>
+              <button className="btn" onClick={sendPresenterReminder} style={{ marginRight: '0.5rem' }}>Send Presenter Reminder</button>
+              <button className="btn" onClick={sendEveryoneReminder}>Send Everyone Reminder</button>
             </div>
 
             {errorMessage && <div className="error-message">{errorMessage}</div>}
