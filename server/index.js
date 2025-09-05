@@ -67,6 +67,10 @@ function generateSchedule(startDate = new Date('2025-09-08')) {
   return schedule;
 }
 
+function getMemberByName(name) {
+  return groupMembers.find((m) => m.name === name) || null;
+}
+
 function sendEmail(to, subject, text) {
   const mailOptions = {
     from: process.env.EMAIL_USER || 'your-email@gmail.com',
@@ -86,67 +90,63 @@ function sendEmail(to, subject, text) {
 
 function checkAndUpdateSchedule() {
   const today = new Date();
-  const dayOfWeek = today.getDay(); // 0 = Sunday, 5 = Friday
-  
-  if (dayOfWeek === 5) { // Friday
-    const nextMonday = new Date(today);
-    nextMonday.setDate(today.getDate() + 3);
-    
-    const nextMeeting = presentationSchedule.find(meeting => 
-      meeting.date === nextMonday.toISOString().split('T')[0]
-    );
-    
-    if (nextMeeting) {
-      // Send reminder to everyone
-      const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${nextMeeting.date}\nTime: ${nextMeeting.time}\nPresenters: ${nextMeeting.presenter1} and ${nextMeeting.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
-      
-      groupMembers.forEach(member => {
-        sendEmail(member.email, 'Biospec Group Meeting Reminder', reminderText);
-      });
-      
-      // Check if we need to generate new schedule
-      const remainingPresenters = groupMembers.filter(member => {
-        const hasPresented = presentationSchedule.some(meeting => 
-          meeting.presenter1 === member.name || meeting.presenter2 === member.name
-        );
-        return !hasPresented;
-      });
-      
-      if (remainingPresenters.length < groupMembers.length / 3) {
-        // Generate new round
-        currentRound++;
-        const lastMeetingDate = new Date(presentationSchedule[presentationSchedule.length - 1].date);
-        lastMeetingDate.setDate(lastMeetingDate.getDate() + 14);
-        
-        const newSchedule = generateSchedule(lastMeetingDate);
-        presentationSchedule = [...presentationSchedule, ...newSchedule];
-        
-        console.log('New round generated:', currentRound);
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+
+  // Clean up past meetings (keep only today or future)
+  presentationSchedule = presentationSchedule.filter(m => {
+    const d = new Date(m.date);
+    const dYMD = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    return dYMD >= todayYMD;
+  });
+
+  // Compute next Monday relative to today
+  const nextMonday = new Date(todayYMD);
+  const daysUntilMonday = (1 - nextMonday.getDay() + 7) % 7; // 1 = Monday
+  nextMonday.setDate(nextMonday.getDate() + daysUntilMonday);
+
+  const nextMondayISO = nextMonday.toISOString().split('T')[0];
+  const meetingNextWeek = presentationSchedule.find(m => m.date === nextMondayISO);
+
+  if (meetingNextWeek) {
+    // Case (2): Meeting next week -> remind everyone
+    const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
+    groupMembers.forEach(member => {
+      sendEmail(member.email, 'Biospec Group Meeting Reminder', reminderText);
+    });
+  } else {
+    // Case (1): No meeting next week -> remind presenters for two weeks from now
+    const mondayAfterNext = new Date(nextMonday);
+    mondayAfterNext.setDate(mondayAfterNext.getDate() + 7);
+    const mondayAfterNextISO = mondayAfterNext.toISOString().split('T')[0];
+
+    const meetingInTwoWeeks = presentationSchedule.find(m => m.date === mondayAfterNextISO)
+      || presentationSchedule.find(m => new Date(m.date) > todayYMD);
+
+    if (meetingInTwoWeeks) {
+      const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
+      if (meetingInTwoWeeks.presenter1Email) {
+        sendEmail(meetingInTwoWeeks.presenter1Email, 'Presenter Reminder', reminderText);
       }
-    } else {
-      // Remove past meeting and move schedule up
-      const pastMeeting = presentationSchedule.find(meeting => {
-        const meetingDate = new Date(meeting.date);
-        return meetingDate < today;
-      });
-      
-      if (pastMeeting) {
-        presentationSchedule = presentationSchedule.filter(meeting => meeting.date !== pastMeeting.date);
-        
-        // Send reminder to next presenters
-        if (presentationSchedule.length > 0) {
-          const nextMeeting = presentationSchedule[0];
-          const reminderText = `Presentation Reminder\n\nYou are scheduled to present on ${nextMeeting.date}. Please prepare your presentation.`;
-          
-          if (nextMeeting.presenter1Email) {
-            sendEmail(nextMeeting.presenter1Email, 'Presentation Reminder', reminderText);
-          }
-          if (nextMeeting.presenter2Email) {
-            sendEmail(nextMeeting.presenter2Email, 'Presentation Reminder', reminderText);
-          }
-        }
+      if (meetingInTwoWeeks.presenter2Email) {
+        sendEmail(meetingInTwoWeeks.presenter2Email, 'Presenter Reminder', reminderText);
       }
     }
+  }
+
+  // Optional: extend schedule if too few unscheduled members remain (keep prior behavior)
+  const remainingPresenters = groupMembers.filter(member => {
+    const hasPresented = presentationSchedule.some(meeting => 
+      meeting.presenter1 === member.name || meeting.presenter2 === member.name
+    );
+    return !hasPresented;
+  });
+  if (remainingPresenters.length < groupMembers.length / 3 && presentationSchedule.length > 0) {
+    currentRound++;
+    const lastMeetingDate = new Date(presentationSchedule[presentationSchedule.length - 1].date);
+    lastMeetingDate.setDate(lastMeetingDate.getDate() + 14);
+    const newSchedule = generateSchedule(lastMeetingDate);
+    presentationSchedule = [...presentationSchedule, ...newSchedule];
+    console.log('New round generated:', currentRound);
   }
 }
 
@@ -155,8 +155,8 @@ presentationSchedule = generateSchedule();
 
 // Cron job to run every Friday at 9 AM
 // Note: In production, you might want to use a more reliable scheduling service
-cron.schedule('0 9 * * 5', checkAndUpdateSchedule, {
-  timezone: "America/New_York" // Adjust timezone as needed
+cron.schedule('0 8 * * 5', checkAndUpdateSchedule, {
+  timezone: "Europe/Berlin"
 });
 
 // API Routes
@@ -296,6 +296,116 @@ app.get('/api/members', (req, res) => {
 });
 
 // Admin endpoints for managing members and regenerating schedule
+app.post('/api/admin/add-member', (req, res) => {
+  const { member, adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  if (!member || !member.name || !member.email) {
+    return res.status(400).json({ success: false, message: 'Member must include name and email' });
+  }
+  const alreadyExists = groupMembers.some((m) => m.name === member.name || m.email === member.email);
+  if (alreadyExists) {
+    return res.status(400).json({ success: false, message: 'Member with same name or email already exists' });
+  }
+  groupMembers.push({ name: member.name, email: member.email });
+  return res.json({ success: true, members: groupMembers });
+});
+
+app.post('/api/admin/remove-member', (req, res) => {
+  const { name, adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  if (!name) {
+    return res.status(400).json({ success: false, message: 'Name is required' });
+  }
+  const index = groupMembers.findIndex((m) => m.name === name);
+  if (index === -1) {
+    return res.status(404).json({ success: false, message: 'Member not found' });
+  }
+  // Remove from members
+  const removed = groupMembers.splice(index, 1)[0];
+  // Blank out their scheduled appearances (create empty spots)
+  presentationSchedule = presentationSchedule.map((meeting) => {
+    const updated = { ...meeting };
+    if (updated.presenter1 === removed.name) {
+      updated.presenter1 = 'TBD';
+      updated.presenter1Email = null;
+    }
+    if (updated.presenter2 === removed.name) {
+      updated.presenter2 = 'TBD';
+      updated.presenter2Email = null;
+    }
+    return updated;
+  });
+  return res.json({ success: true, members: groupMembers, schedule: presentationSchedule });
+});
+
+app.post('/api/admin/refill-schedule', (req, res) => {
+  const { adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+
+  // Collect names already scheduled (exclude TBD)
+  const scheduledNames = new Set();
+  for (const mt of presentationSchedule) {
+    if (mt.presenter1 && mt.presenter1 !== 'TBD') scheduledNames.add(mt.presenter1);
+    if (mt.presenter2 && mt.presenter2 !== 'TBD') scheduledNames.add(mt.presenter2);
+  }
+
+  // Compute unscheduled members
+  const unscheduled = groupMembers.filter((m) => !scheduledNames.has(m.name));
+
+  // Fill empty spots (TBD) in chronological order
+  let fillIndex = 0;
+  for (const mt of presentationSchedule) {
+    if (fillIndex >= unscheduled.length) break;
+    if (!mt.presenter1 || mt.presenter1 === 'TBD') {
+      const mem = unscheduled[fillIndex++];
+      mt.presenter1 = mem.name;
+      mt.presenter1Email = mem.email;
+      if (fillIndex >= unscheduled.length) break;
+    }
+    if (!mt.presenter2 || mt.presenter2 === 'TBD') {
+      if (fillIndex < unscheduled.length) {
+        const mem = unscheduled[fillIndex++];
+        mt.presenter2 = mem.name;
+        mt.presenter2Email = mem.email;
+      }
+    }
+  }
+
+  // Append new meetings for any remaining unscheduled members
+  if (fillIndex < unscheduled.length) {
+    // Determine next meeting date
+    let baseDate;
+    if (presentationSchedule.length > 0) {
+      baseDate = new Date(presentationSchedule[presentationSchedule.length - 1].date);
+    } else {
+      baseDate = new Date('2025-09-08');
+    }
+    // Create new meetings in pairs
+    while (fillIndex < unscheduled.length) {
+      // Next meeting date is +14 days from last
+      baseDate = new Date(baseDate);
+      baseDate.setDate(baseDate.getDate() + 14);
+      const presenterA = unscheduled[fillIndex++];
+      const presenterB = fillIndex < unscheduled.length ? unscheduled[fillIndex++] : null;
+      presentationSchedule.push({
+        date: baseDate.toISOString().split('T')[0],
+        time: '09:00',
+        presenter1: presenterA.name,
+        presenter1Email: presenterA.email,
+        presenter2: presenterB ? presenterB.name : 'TBD',
+        presenter2Email: presenterB ? presenterB.email : null,
+      });
+    }
+  }
+
+  return res.json({ success: true, schedule: presentationSchedule });
+});
 app.post('/api/admin/update-members', (req, res) => {
   const { members, adminPasscode } = req.body;
   
@@ -376,6 +486,40 @@ app.get('/api/admin/export-members', (req, res) => {
     members: groupMembers,
     exportDate: new Date().toISOString()
   });
+});
+
+// Manual reminders
+app.post('/api/admin/send-presenter-reminder', (req, res) => {
+  const { adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const upcoming = presentationSchedule.find(m => new Date(m.date) >= todayYMD);
+  if (!upcoming) {
+    return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
+  }
+  const text = `Presenter Reminder\n\nYou are scheduled to present on ${upcoming.date} at ${upcoming.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
+  if (upcoming.presenter1Email) sendEmail(upcoming.presenter1Email, 'Presenter Reminder', text);
+  if (upcoming.presenter2Email) sendEmail(upcoming.presenter2Email, 'Presenter Reminder', text);
+  return res.json({ success: true });
+});
+
+app.post('/api/admin/send-everyone-reminder', (req, res) => {
+  const { adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const upcoming = presentationSchedule.find(m => new Date(m.date) >= todayYMD);
+  if (!upcoming) {
+    return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
+  }
+  const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
+  groupMembers.forEach(member => sendEmail(member.email, 'Biospec Group Meeting Reminder', text));
+  return res.json({ success: true });
 });
 
 // Serve React app
