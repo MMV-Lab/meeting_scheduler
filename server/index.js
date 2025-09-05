@@ -13,6 +13,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../build')));
 
+// Persistence helpers (KV or local JSON for dev)
+const { loadMembers, saveMembers, loadSchedule, saveSchedule } = require('./persistence');
+
 // Global variables
 const PASSCODE = "BiospecParty";
 const ADMIN_PASSCODE = "AdminChen01234";
@@ -163,8 +166,32 @@ function checkAndUpdateSchedule() {
   }
 }
 
-// Initialize schedule
-presentationSchedule = generateSchedule();
+// Initialize members and schedule from persistence (or defaults)
+(async () => {
+  try {
+    const storedMembers = await loadMembers();
+    if (storedMembers && Array.isArray(storedMembers) && storedMembers.length > 0) {
+      groupMembers = storedMembers;
+    } else {
+      // Persist default members on first run
+      await saveMembers(groupMembers);
+    }
+
+    const storedSchedule = await loadSchedule();
+    if (storedSchedule && Array.isArray(storedSchedule) && storedSchedule.length > 0) {
+      presentationSchedule = storedSchedule;
+    } else {
+      presentationSchedule = generateSchedule();
+      await saveSchedule(presentationSchedule);
+    }
+    console.log(`[Init] Loaded members: ${groupMembers.length}, meetings: ${presentationSchedule.length}`);
+  } catch (e) {
+    console.warn('[Init] Failed to load persisted state, using defaults', e);
+    if (!presentationSchedule || presentationSchedule.length === 0) {
+      presentationSchedule = generateSchedule();
+    }
+  }
+})();
 
 // Cron job to run every Friday at 9 AM
 // Note: In production, you might want to use a more reliable scheduling service
@@ -213,7 +240,9 @@ app.post('/api/swap-presenters', (req, res) => {
     meeting2.presenter1 = tempPresenter1;
     meeting2.presenter2 = tempPresenter2;
     
-    res.json({ success: true, schedule: presentationSchedule });
+    saveSchedule(presentationSchedule).finally(() => {
+      res.json({ success: true, schedule: presentationSchedule });
+    });
   } else {
     res.status(400).json({ success: false, message: 'Invalid dates' });
   }
@@ -253,7 +282,9 @@ app.post('/api/skip-meeting', (req, res) => {
   presentationSchedule[lastIndex].presenter2Email = skippedPresenters.presenter2Email;
   
   console.log(`Meeting skipped: ${date}. Presenters shifted forward. Schedule still has ${presentationSchedule.length} meetings.`);
-  res.json({ success: true, schedule: presentationSchedule });
+  saveSchedule(presentationSchedule).finally(() => {
+    res.json({ success: true, schedule: presentationSchedule });
+  });
 });
 
 app.post('/api/change-date', (req, res) => {
@@ -275,7 +306,9 @@ app.post('/api/change-date', (req, res) => {
   }
   
   console.log(`Meeting date changed: ${oldDate} -> ${newDate}. Schedule updated.`);
-  res.json({ success: true, schedule: presentationSchedule });
+  saveSchedule(presentationSchedule).finally(() => {
+    res.json({ success: true, schedule: presentationSchedule });
+  });
 });
 
 app.post('/api/change-time', (req, res) => {
@@ -301,7 +334,9 @@ app.post('/api/change-time', (req, res) => {
   presentationSchedule[meetingIndex].time = newTime;
   
   console.log(`Meeting time changed: ${date} -> ${newTime}.`);
-  res.json({ success: true, schedule: presentationSchedule });
+  saveSchedule(presentationSchedule).finally(() => {
+    res.json({ success: true, schedule: presentationSchedule });
+  });
 });
 
 app.get('/api/members', (req, res) => {
@@ -322,7 +357,9 @@ app.post('/api/admin/add-member', (req, res) => {
     return res.status(400).json({ success: false, message: 'Member with same name or email already exists' });
   }
   groupMembers.push({ name: member.name, email: member.email });
-  return res.json({ success: true, members: groupMembers });
+  saveMembers(groupMembers).finally(() => {
+    return res.json({ success: true, members: groupMembers });
+  });
 });
 
 app.post('/api/admin/remove-member', (req, res) => {
@@ -352,7 +389,9 @@ app.post('/api/admin/remove-member', (req, res) => {
     }
     return updated;
   });
-  return res.json({ success: true, members: groupMembers, schedule: presentationSchedule });
+  Promise.allSettled([saveMembers(groupMembers), saveSchedule(presentationSchedule)]).finally(() => {
+    return res.json({ success: true, members: groupMembers, schedule: presentationSchedule });
+  });
 });
 
 app.post('/api/admin/refill-schedule', (req, res) => {
@@ -417,7 +456,9 @@ app.post('/api/admin/refill-schedule', (req, res) => {
     }
   }
 
-  return res.json({ success: true, schedule: presentationSchedule });
+  saveSchedule(presentationSchedule).finally(() => {
+    return res.json({ success: true, schedule: presentationSchedule });
+  });
 });
 app.post('/api/admin/update-members', (req, res) => {
   const { members, adminPasscode } = req.body;
@@ -450,11 +491,13 @@ app.post('/api/admin/update-members', (req, res) => {
   
   console.log(`Members updated: ${groupMembers.length} members. New schedule generated with ${presentationSchedule.length} meetings.`);
   
-  res.json({ 
-    success: true, 
-    message: 'Members updated and schedule regenerated',
-    members: groupMembers,
-    schedule: presentationSchedule
+  Promise.allSettled([saveMembers(groupMembers), saveSchedule(presentationSchedule)]).finally(() => {
+    res.json({ 
+      success: true, 
+      message: 'Members updated and schedule regenerated',
+      members: groupMembers,
+      schedule: presentationSchedule
+    });
   });
 });
 
@@ -473,10 +516,12 @@ app.post('/api/admin/regenerate-schedule', (req, res) => {
     
     console.log(`Schedule regenerated starting from ${start.toISOString().split('T')[0]}. ${presentationSchedule.length} meetings created.`);
     
-    res.json({ 
-      success: true, 
-      message: 'Schedule regenerated successfully',
-      schedule: presentationSchedule
+    saveSchedule(presentationSchedule).finally(() => {
+      res.json({ 
+        success: true, 
+        message: 'Schedule regenerated successfully',
+        schedule: presentationSchedule
+      });
     });
   } catch (error) {
     res.status(400).json({ 
