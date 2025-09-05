@@ -256,6 +256,12 @@ function App() {
         setMembers(data.members);
         setSuccessMessage('Member added');
         setTimeout(() => setSuccessMessage(''), 3000);
+        // Clear add-member inputs for convenience
+        const nameEl = document.getElementById('newMemberName');
+        const emailEl = document.getElementById('newMemberEmail');
+        if (nameEl) nameEl.value = '';
+        if (emailEl) emailEl.value = '';
+        setErrorMessage('');
       } else {
         setErrorMessage(data.message || 'Failed to add member');
       }
