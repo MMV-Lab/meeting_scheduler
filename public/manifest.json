@@ -1,0 +1,10 @@
+{
+  "short_name": "Biospec",
+  "name": "Biospec Group Meeting Scheduler",
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#764ba2",
+  "background_color": "#ffffff",
+  "icons": []
+}
+

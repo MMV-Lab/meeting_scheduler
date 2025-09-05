@@ -36,12 +36,24 @@ let groupMembers = [
 let presentationSchedule = [];
 let currentRound = 1;
 
-// Email transporter (configure with your email service)
+// Email transporter (configure with your SMTP service)
+const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
+const smtpPort = parseInt(process.env.SMTP_PORT || '465', 10);
+const smtpSecure = process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : smtpPort === 465;
+const smtpUser = process.env.EMAIL_USER;
+const smtpPass = process.env.EMAIL_PASS;
+
+if (!smtpUser || !smtpPass) {
+  console.warn('[Email] EMAIL_USER/EMAIL_PASS not configured. Email sending will fail until configured.');
+}
+
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: smtpHost,
+  port: smtpPort,
+  secure: smtpSecure,
   auth: {
-    user: process.env.EMAIL_USER || 'your-email@gmail.com',
-    pass: process.env.EMAIL_PASS || 'your-app-password'
+    user: smtpUser,
+    pass: smtpPass
   }
 });
 
@@ -71,21 +83,19 @@ function getMemberByName(name) {
   return groupMembers.find((m) => m.name === name) || null;
 }
 
-function sendEmail(to, subject, text) {
+async function sendEmail(to, subject, text) {
+  if (!smtpUser || !smtpPass) {
+    throw new Error('EMAIL_USER/EMAIL_PASS not configured');
+  }
   const mailOptions = {
-    from: process.env.EMAIL_USER || 'your-email@gmail.com',
+    from: smtpUser,
     to: to,
     subject: subject,
     text: text
   };
-
-  transporter.sendMail(mailOptions, (error, info) => {
-    if (error) {
-      console.log('Error sending email:', error);
-    } else {
-      console.log('Email sent:', info.response);
-    }
-  });
+  const info = await transporter.sendMail(mailOptions);
+  console.log('Email sent:', info.response);
+  return info;
 }
 
 function checkAndUpdateSchedule() {
@@ -110,9 +120,11 @@ function checkAndUpdateSchedule() {
   if (meetingNextWeek) {
     // Case (2): Meeting next week -> remind everyone
     const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
-    groupMembers.forEach(member => {
-      sendEmail(member.email, 'Biospec Group Meeting Reminder', reminderText);
-    });
+    Promise.allSettled(groupMembers.map(member => sendEmail(member.email, 'Biospec Group Meeting Reminder', reminderText)))
+      .then(results => {
+        const failures = results.filter(r => r.status === 'rejected').length;
+        if (failures > 0) console.warn(`[Email] ${failures} reminder(s) failed`);
+      });
   } else {
     // Case (1): No meeting next week -> remind presenters for two weeks from now
     const mondayAfterNext = new Date(nextMonday);
@@ -124,12 +136,13 @@ function checkAndUpdateSchedule() {
 
     if (meetingInTwoWeeks) {
       const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
-      if (meetingInTwoWeeks.presenter1Email) {
-        sendEmail(meetingInTwoWeeks.presenter1Email, 'Presenter Reminder', reminderText);
-      }
-      if (meetingInTwoWeeks.presenter2Email) {
-        sendEmail(meetingInTwoWeeks.presenter2Email, 'Presenter Reminder', reminderText);
-      }
+      const tasks = [];
+      if (meetingInTwoWeeks.presenter1Email) tasks.push(sendEmail(meetingInTwoWeeks.presenter1Email, 'Presenter Reminder', reminderText));
+      if (meetingInTwoWeeks.presenter2Email) tasks.push(sendEmail(meetingInTwoWeeks.presenter2Email, 'Presenter Reminder', reminderText));
+      Promise.allSettled(tasks).then(results => {
+        const failures = results.filter(r => r.status === 'rejected').length;
+        if (failures > 0) console.warn(`[Email] ${failures} presenter reminder(s) failed`);
+      });
     }
   }
 
@@ -488,6 +501,25 @@ app.get('/api/admin/export-members', (req, res) => {
   });
 });
 
+// Simple healthcheck for cron/execution visibility
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, now: new Date().toISOString(), nextMeeting: presentationSchedule[0] || null });
+});
+
+// Cron trigger endpoint (for Vercel Cron or manual invocation)
+app.post('/api/admin/run-reminder-check', (req, res) => {
+  const { adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  try {
+    checkAndUpdateSchedule();
+    return res.json({ success: true });
+  } catch (e) {
+    return res.status(500).json({ success: false, message: 'Failed to run reminder check' });
+  }
+});
+
 // Manual reminders
 app.post('/api/admin/send-presenter-reminder', (req, res) => {
   const { adminPasscode } = req.body;
@@ -501,9 +533,13 @@ app.post('/api/admin/send-presenter-reminder', (req, res) => {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
   const text = `Presenter Reminder\n\nYou are scheduled to present on ${upcoming.date} at ${upcoming.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
-  if (upcoming.presenter1Email) sendEmail(upcoming.presenter1Email, 'Presenter Reminder', text);
-  if (upcoming.presenter2Email) sendEmail(upcoming.presenter2Email, 'Presenter Reminder', text);
-  return res.json({ success: true });
+  const tasks = [];
+  if (upcoming.presenter1Email) tasks.push(sendEmail(upcoming.presenter1Email, 'Presenter Reminder', text));
+  if (upcoming.presenter2Email) tasks.push(sendEmail(upcoming.presenter2Email, 'Presenter Reminder', text));
+  Promise.allSettled(tasks).then(results => {
+    const failures = results.filter(r => r.status === 'rejected');
+    return res.json({ success: failures.length === 0, failures: failures.length });
+  }).catch(() => res.json({ success: false }));
 });
 
 app.post('/api/admin/send-everyone-reminder', (req, res) => {
@@ -518,8 +554,12 @@ app.post('/api/admin/send-everyone-reminder', (req, res) => {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
   const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
-  groupMembers.forEach(member => sendEmail(member.email, 'Biospec Group Meeting Reminder', text));
-  return res.json({ success: true });
+  Promise.allSettled(groupMembers.map(member => sendEmail(member.email, 'Biospec Group Meeting Reminder', text)))
+    .then(results => {
+      const failures = results.filter(r => r.status === 'rejected');
+      return res.json({ success: failures.length === 0, failures: failures.length });
+    })
+    .catch(() => res.json({ success: false }));
 });
 
 // Serve React app
