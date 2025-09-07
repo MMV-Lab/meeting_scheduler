@@ -352,7 +352,10 @@ app.post('/api/change-time', (req, res) => {
   });
 });
 
-app.get('/api/members', (req, res) => {
+app.get('/api/members', async (req, res) => {
+  if (!initResolved) {
+    try { await initPromise; } catch (_) {}
+  }
   res.set('Cache-Control', 'no-store');
   res.json(groupMembers);
 });
