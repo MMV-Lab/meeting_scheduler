@@ -191,7 +191,7 @@ function App() {
         },
         body: JSON.stringify({ 
           members: newMembers,
-          adminPasscode: "AdminChen01234"
+          adminPasscode: passcode
         }),
       });
       
@@ -223,7 +223,7 @@ function App() {
         },
         body: JSON.stringify({ 
           startDate,
-          adminPasscode: "AdminChen01234"
+          adminPasscode: passcode
         }),
       });
       
@@ -249,7 +249,7 @@ function App() {
       const response = await fetch('/api/admin/add-member', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ member, adminPasscode: 'AdminChen01234' })
+        body: JSON.stringify({ member, adminPasscode: passcode })
       });
       const data = await response.json();
       if (data.success) {
@@ -278,7 +278,7 @@ function App() {
       const response = await fetch('/api/admin/remove-member', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, adminPasscode: 'AdminChen01234' })
+        body: JSON.stringify({ name, adminPasscode: passcode })
       });
       const data = await response.json();
       if (data.success) {
@@ -302,7 +302,7 @@ function App() {
       const response = await fetch('/api/admin/refill-schedule', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPasscode: 'AdminChen01234' })
+        body: JSON.stringify({ adminPasscode: passcode })
       });
       const data = await response.json();
       if (data.success) {
@@ -325,7 +325,7 @@ function App() {
       const response = await fetch('/api/admin/send-presenter-reminder', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPasscode: 'AdminChen01234' })
+        body: JSON.stringify({ adminPasscode: passcode })
       });
       const data = await response.json();
       if (data.success) {
@@ -347,7 +347,7 @@ function App() {
       const response = await fetch('/api/admin/send-everyone-reminder', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ adminPasscode: 'AdminChen01234' })
+        body: JSON.stringify({ adminPasscode: passcode })
       });
       const data = await response.json();
       if (data.success) {
@@ -365,7 +365,7 @@ function App() {
 
   const exportMembers = async () => {
     try {
-      const response = await fetch(`/api/admin/export-members?adminPasscode=AdminChen01234`);
+      const response = await fetch(`/api/admin/export-members?adminPasscode=${encodeURIComponent(passcode)}`);
       const data = await response.json();
       
       if (data.success) {
@@ -414,7 +414,7 @@ function App() {
         body: JSON.stringify({
           date: selectedMeeting.date,
           newTime: newTime,
-          adminPasscode: 'AdminChen01234'
+          adminPasscode: passcode
         }),
       });
       
