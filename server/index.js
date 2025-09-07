@@ -17,10 +17,10 @@ app.use(express.static(path.join(__dirname, '../build')));
 const { loadMembers, saveMembers, loadSchedule, saveSchedule } = require('./persistence');
 
 // Global variables (from env)
-const PASSCODE = process.env.USER_PASSCODE || process.env.PASSCODE || 'BiospecParty';
-const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || 'AdminChen01234';
-const ZOOM_LINK = "https://zoom.us/j/1234567890?pwd=placeholder";
-const SCHEDULE_REPORT_EMAIL = process.env.SCHEDULE_REPORT_EMAIL || 'jianxu.chen@isas.de';
+const PASSCODE = process.env.USER_PASSCODE || process.env.PASSCODE;
+const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE;
+const ZOOM_LINK = process.env.GROUP_ZOOM_LINK;
+const SCHEDULE_REPORT_EMAIL = process.env.SCHEDULE_REPORT_EMAIL;
 
 // Sample group members (you can replace with actual members)
 let groupMembers = [
