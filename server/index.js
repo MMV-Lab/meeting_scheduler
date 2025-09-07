@@ -221,7 +221,14 @@ app.post('/api/login', (req, res) => {
 });
 
 app.get('/api/schedule', (req, res) => {
-  res.json(presentationSchedule);
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const upcoming = presentationSchedule.filter(m => {
+    const d = new Date(m.date);
+    const dYMD = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    return dYMD >= todayYMD;
+  });
+  res.json(upcoming);
 });
 
 app.post('/api/swap-presenters', (req, res) => {
@@ -376,14 +383,18 @@ app.post('/api/admin/remove-member', (req, res) => {
   }
   // Remove from members
   const removed = groupMembers.splice(index, 1)[0];
-  // Blank out their scheduled appearances (create empty spots)
+  // Blank out their scheduled appearances (future only)
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   presentationSchedule = presentationSchedule.map((meeting) => {
     const updated = { ...meeting };
-    if (updated.presenter1 === removed.name) {
+    const md = new Date(updated.date);
+    const mdYMD = new Date(md.getFullYear(), md.getMonth(), md.getDate());
+    if (mdYMD >= todayYMD && updated.presenter1 === removed.name) {
       updated.presenter1 = 'TBD';
       updated.presenter1Email = null;
     }
-    if (updated.presenter2 === removed.name) {
+    if (mdYMD >= todayYMD && updated.presenter2 === removed.name) {
       updated.presenter2 = 'TBD';
       updated.presenter2Email = null;
     }
@@ -410,9 +421,14 @@ app.post('/api/admin/refill-schedule', (req, res) => {
   // Compute unscheduled members
   const unscheduled = groupMembers.filter((m) => !scheduledNames.has(m.name));
 
-  // Fill empty spots (TBD) in chronological order
+  // Fill empty spots (TBD) in chronological order (future meetings only)
   let fillIndex = 0;
   for (const mt of presentationSchedule) {
+    const md = new Date(mt.date);
+    const today = new Date();
+    const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    const mdYMD = new Date(md.getFullYear(), md.getMonth(), md.getDate());
+    if (mdYMD < todayYMD) continue;
     if (fillIndex >= unscheduled.length) break;
     if (!mt.presenter1 || mt.presenter1 === 'TBD') {
       const mem = unscheduled[fillIndex++];
@@ -544,6 +560,15 @@ app.get('/api/admin/export-members', (req, res) => {
     members: groupMembers,
     exportDate: new Date().toISOString()
   });
+});
+
+// Export full schedule including past meetings
+app.get('/api/admin/schedule-full', (req, res) => {
+  const { adminPasscode } = req.query;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  res.json({ success: true, schedule: presentationSchedule, exportDate: new Date().toISOString() });
 });
 
 // Simple healthcheck for cron/execution visibility
