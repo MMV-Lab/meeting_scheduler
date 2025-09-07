@@ -460,6 +460,31 @@ function App() {
     }
   };
 
+  // Admin: assign a presenter into an empty slot
+  const assignPresenter = async (meeting, slot, memberName) => {
+    if (!meeting || (slot !== 'presenter1' && slot !== 'presenter2') || !memberName) return;
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/assign-presenter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: meeting.date, slot, memberName, adminPasscode: passcode })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSchedule(data.schedule);
+        setSuccessMessage(`Assigned ${memberName} to ${slot === 'presenter1' ? 'Presenter 1' : 'Presenter 2'} on ${meeting.date}`);
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to assign presenter');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while assigning presenter.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="login-container">
@@ -544,10 +569,21 @@ function App() {
                 <Users size={18} />
                 <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   {meeting.presenter1 || <em style={{opacity: 0.7}}>Empty</em>}
-                  {isAdmin && meeting.presenter1 && (
-                    <button className="action-btn" title="Remove presenter 1" onClick={() => removePresenter(meeting, 'presenter1')}>
-                      <X size={14} />
-                    </button>
+                  {isAdmin && (
+                    <>
+                      {meeting.presenter1 ? (
+                        <button className="action-btn" title="Remove presenter 1" onClick={() => removePresenter(meeting, 'presenter1')}>
+                          <X size={14} />
+                        </button>
+                      ) : (
+                        <select className="form-select" onChange={(e) => e.target.value && assignPresenter(meeting, 'presenter1', e.target.value)} defaultValue="">
+                          <option value="" disabled>Assign...</option>
+                          {members.map((m) => (
+                            <option key={`p1-${meeting.date}-${m.email}`} value={m.name}>{m.name}</option>
+                          ))}
+                        </select>
+                      )}
+                    </>
                   )}
                 </span>
               </div>
@@ -555,10 +591,21 @@ function App() {
                 <Users size={18} />
                 <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   {meeting.presenter2 || <em style={{opacity: 0.7}}>Empty</em>}
-                  {isAdmin && meeting.presenter2 && (
-                    <button className="action-btn" title="Remove presenter 2" onClick={() => removePresenter(meeting, 'presenter2')}>
-                      <X size={14} />
-                    </button>
+                  {isAdmin && (
+                    <>
+                      {meeting.presenter2 ? (
+                        <button className="action-btn" title="Remove presenter 2" onClick={() => removePresenter(meeting, 'presenter2')}>
+                          <X size={14} />
+                        </button>
+                      ) : (
+                        <select className="form-select" onChange={(e) => e.target.value && assignPresenter(meeting, 'presenter2', e.target.value)} defaultValue="">
+                          <option value="" disabled>Assign...</option>
+                          {members.map((m) => (
+                            <option key={`p2-${meeting.date}-${m.email}`} value={m.name}>{m.name}</option>
+                          ))}
+                        </select>
+                      )}
+                    </>
                   )}
                 </span>
               </div>

@@ -480,6 +480,42 @@ app.post('/api/admin/remove-presenter', (req, res) => {
   });
 });
 
+// Assign a specific member to a presenter slot on a specific date (admin only)
+app.post('/api/admin/assign-presenter', (req, res) => {
+  const { date, slot, memberName, adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  if (!date || (slot !== 'presenter1' && slot !== 'presenter2') || !memberName) {
+    return res.status(400).json({ success: false, message: 'date, slot (presenter1|presenter2), and memberName are required' });
+  }
+
+  const idx = presentationSchedule.findIndex(m => m.date === date);
+  if (idx === -1) {
+    return res.status(404).json({ success: false, message: 'Meeting date not found' });
+  }
+
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const md = new Date(presentationSchedule[idx].date);
+  const mdYMD = new Date(md.getFullYear(), md.getMonth(), md.getDate());
+  if (mdYMD < todayYMD) {
+    return res.status(400).json({ success: false, message: 'Cannot modify a past meeting' });
+  }
+
+  const member = groupMembers.find(m => m.name === memberName);
+  if (!member) {
+    return res.status(404).json({ success: false, message: 'Member not found' });
+  }
+
+  presentationSchedule[idx][slot] = member.name;
+  presentationSchedule[idx][`${slot}Email`] = member.email;
+
+  saveSchedule(presentationSchedule).finally(() => {
+    return res.json({ success: true, schedule: presentationSchedule });
+  });
+});
+
 app.post('/api/admin/refill-schedule', (req, res) => {
   const { adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
