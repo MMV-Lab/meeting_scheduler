@@ -222,6 +222,12 @@ const initPromise = (async () => {
   initResolved = true;
 })();
 
+async function ensureInit() {
+  if (!initResolved) {
+    try { await initPromise; } catch (_) {}
+  }
+}
+
 // Cron job to run every Friday at 9 AM
 // Note: In production, you might want to use a more reliable scheduling service
 cron.schedule('0 8 * * 5', checkAndUpdateSchedule, {
@@ -538,8 +544,9 @@ app.post('/api/admin/update-members', (req, res) => {
   // Update members
   groupMembers = [...members];
   
-  // Regenerate schedule with new members
-  presentationSchedule = generateSchedule();
+  // Regenerate schedule with new members using same start as existing schedule if present
+  const start = presentationSchedule.length > 0 ? new Date(presentationSchedule[0].date) : new Date('2025-09-08');
+  presentationSchedule = generateSchedule(start);
   currentRound = 1;
   
   console.log(`Members updated: ${groupMembers.length} members. New schedule generated with ${presentationSchedule.length} meetings.`);
@@ -554,7 +561,7 @@ app.post('/api/admin/update-members', (req, res) => {
   });
 });
 
-app.post('/api/admin/regenerate-schedule', (req, res) => {
+app.post('/api/admin/regenerate-schedule', async (req, res) => {
   const { startDate, adminPasscode } = req.body;
   
   // Verify admin access
@@ -563,6 +570,7 @@ app.post('/api/admin/regenerate-schedule', (req, res) => {
   }
   
   try {
+    await ensureInit();
     const start = startDate ? new Date(startDate) : new Date('2025-09-08');
     presentationSchedule = generateSchedule(start);
     currentRound = 1;
