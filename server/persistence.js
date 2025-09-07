@@ -32,10 +32,11 @@ async function kvGet(key) {
 
 async function kvSet(key, value) {
   const { url, token } = getKVBase();
-  const resp = await fetch(`${url}/set/${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ value: JSON.stringify(value) })
+  const val = encodeURIComponent(JSON.stringify(value));
+  // Upstash Redis REST uses command-style paths, e.g. /set/{key}/{value}
+  const resp = await fetch(`${url}/set/${encodeURIComponent(key)}/${val}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` }
   });
   return resp.ok;
 }
