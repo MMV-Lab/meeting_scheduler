@@ -20,6 +20,7 @@ const { loadMembers, saveMembers, loadSchedule, saveSchedule } = require('./pers
 const PASSCODE = process.env.USER_PASSCODE || process.env.PASSCODE || 'BiospecParty';
 const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || 'AdminChen01234';
 const ZOOM_LINK = "https://zoom.us/j/1234567890?pwd=placeholder";
+const SCHEDULE_REPORT_EMAIL = process.env.SCHEDULE_REPORT_EMAIL || 'jianxu.chen@isas.de';
 
 // Sample group members (you can replace with actual members)
 let groupMembers = [
@@ -101,6 +102,22 @@ async function sendEmail(to, subject, text) {
   return info;
 }
 
+function composeFullScheduleEmailText() {
+  const sorted = [...presentationSchedule].sort((a, b) => new Date(a.date) - new Date(b.date));
+  const lines = [
+    'Biospec Group: Full Schedule',
+    '',
+    `Generated at: ${new Date().toISOString()}`,
+    ''
+  ];
+  for (const m of sorted) {
+    const line = `${m.date} ${m.time || '09:00'}  -  ${m.presenter1}${m.presenter2 ? `, ${m.presenter2}` : ''}`;
+    lines.push(line);
+  }
+  lines.push('', `Total meetings: ${sorted.length}`);
+  return lines.join('\n');
+}
+
 function checkAndUpdateSchedule() {
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -147,6 +164,16 @@ function checkAndUpdateSchedule() {
         if (failures > 0) console.warn(`[Email] ${failures} presenter reminder(s) failed`);
       });
     }
+  }
+
+  // Send weekly full schedule report to designated email
+  try {
+    const reportText = composeFullScheduleEmailText();
+    sendEmail(SCHEDULE_REPORT_EMAIL, 'Biospec Full Schedule (Weekly Report)', reportText)
+      .then(() => console.log(`[Email] Full schedule report sent to ${SCHEDULE_REPORT_EMAIL}`))
+      .catch((e) => console.warn('[Email] Failed to send full schedule report', e));
+  } catch (e) {
+    console.warn('[Email] Exception preparing full schedule report', e);
   }
 
   // Optional: extend schedule if too few unscheduled members remain (keep prior behavior)
