@@ -16,9 +16,9 @@ app.use(express.static(path.join(__dirname, '../build')));
 // Persistence helpers (KV or local JSON for dev)
 const { loadMembers, saveMembers, loadSchedule, saveSchedule } = require('./persistence');
 
-// Global variables
-const PASSCODE = "BiospecParty";
-const ADMIN_PASSCODE = "AdminChen01234";
+// Global variables (from env)
+const PASSCODE = process.env.USER_PASSCODE || process.env.PASSCODE || 'BiospecParty';
+const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE || 'AdminChen01234';
 const ZOOM_LINK = "https://zoom.us/j/1234567890?pwd=placeholder";
 
 // Sample group members (you can replace with actual members)
