@@ -435,6 +435,31 @@ function App() {
     }
   };
 
+  // Admin: remove a single presenter from a given meeting (presenter1|presenter2)
+  const removePresenter = async (meeting, slot) => {
+    if (!meeting || (slot !== 'presenter1' && slot !== 'presenter2')) return;
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/remove-presenter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: meeting.date, slot, adminPasscode: passcode })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSchedule(data.schedule);
+        setSuccessMessage(`Removed ${slot === 'presenter1' ? 'Presenter 1' : 'Presenter 2'} from ${meeting.date}`);
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to remove presenter');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while removing presenter.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="login-container">
@@ -517,11 +542,25 @@ function App() {
               </div>
               <div className="table-cell presenter-cell">
                 <Users size={18} />
-                {meeting.presenter1}
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {meeting.presenter1 || <em style={{opacity: 0.7}}>Empty</em>}
+                  {isAdmin && meeting.presenter1 && (
+                    <button className="action-btn" title="Remove presenter 1" onClick={() => removePresenter(meeting, 'presenter1')}>
+                      <X size={14} />
+                    </button>
+                  )}
+                </span>
               </div>
               <div className="table-cell presenter-cell">
                 <Users size={18} />
-                {meeting.presenter2}
+                <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {meeting.presenter2 || <em style={{opacity: 0.7}}>Empty</em>}
+                  {isAdmin && meeting.presenter2 && (
+                    <button className="action-btn" title="Remove presenter 2" onClick={() => removePresenter(meeting, 'presenter2')}>
+                      <X size={14} />
+                    </button>
+                  )}
+                </span>
               </div>
               <div className="table-cell action-cell">
                 <button

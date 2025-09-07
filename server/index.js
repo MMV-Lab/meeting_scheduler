@@ -74,7 +74,7 @@ function generateSchedule(startDate = new Date('2025-09-08')) {
       date: meetingDate.toISOString().split('T')[0],
       time: '09:00',
       presenter1: shuffledMembers[i].name,
-      presenter2: shuffledMembers[i + 1] ? shuffledMembers[i + 1].name : 'TBD',
+      presenter2: shuffledMembers[i + 1] ? shuffledMembers[i + 1].name : null,
       presenter1Email: shuffledMembers[i].email,
       presenter2Email: shuffledMembers[i + 1] ? shuffledMembers[i + 1].email : null
     });
@@ -426,7 +426,7 @@ app.post('/api/admin/remove-member', (req, res) => {
   }
   // Remove from members
   const removed = groupMembers.splice(index, 1)[0];
-  // Blank out their scheduled appearances (future only)
+  // Remove their scheduled appearances (future only)
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   presentationSchedule = presentationSchedule.map((meeting) => {
@@ -434,17 +434,49 @@ app.post('/api/admin/remove-member', (req, res) => {
     const md = new Date(updated.date);
     const mdYMD = new Date(md.getFullYear(), md.getMonth(), md.getDate());
     if (mdYMD >= todayYMD && updated.presenter1 === removed.name) {
-      updated.presenter1 = 'TBD';
+      updated.presenter1 = null;
       updated.presenter1Email = null;
     }
     if (mdYMD >= todayYMD && updated.presenter2 === removed.name) {
-      updated.presenter2 = 'TBD';
+      updated.presenter2 = null;
       updated.presenter2Email = null;
     }
     return updated;
   });
   Promise.allSettled([saveMembers(groupMembers), saveSchedule(presentationSchedule)]).finally(() => {
     return res.json({ success: true, members: groupMembers, schedule: presentationSchedule });
+  });
+});
+
+// Remove a single presenter from a specific meeting (admin only)
+app.post('/api/admin/remove-presenter', (req, res) => {
+  const { date, slot, adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  if (!date || (slot !== 'presenter1' && slot !== 'presenter2')) {
+    return res.status(400).json({ success: false, message: 'date and slot (presenter1|presenter2) are required' });
+  }
+
+  const idx = presentationSchedule.findIndex(m => m.date === date);
+  if (idx === -1) {
+    return res.status(404).json({ success: false, message: 'Meeting date not found' });
+  }
+
+  // Optional: restrict to today/future
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const md = new Date(presentationSchedule[idx].date);
+  const mdYMD = new Date(md.getFullYear(), md.getMonth(), md.getDate());
+  if (mdYMD < todayYMD) {
+    return res.status(400).json({ success: false, message: 'Cannot modify a past meeting' });
+  }
+
+  presentationSchedule[idx][slot] = null;
+  presentationSchedule[idx][`${slot}Email`] = null;
+
+  saveSchedule(presentationSchedule).finally(() => {
+    return res.json({ success: true, schedule: presentationSchedule });
   });
 });
 
@@ -457,14 +489,14 @@ app.post('/api/admin/refill-schedule', (req, res) => {
   // Collect names already scheduled (exclude TBD)
   const scheduledNames = new Set();
   for (const mt of presentationSchedule) {
-    if (mt.presenter1 && mt.presenter1 !== 'TBD') scheduledNames.add(mt.presenter1);
-    if (mt.presenter2 && mt.presenter2 !== 'TBD') scheduledNames.add(mt.presenter2);
+    if (mt.presenter1) scheduledNames.add(mt.presenter1);
+    if (mt.presenter2) scheduledNames.add(mt.presenter2);
   }
 
   // Compute unscheduled members
   const unscheduled = groupMembers.filter((m) => !scheduledNames.has(m.name));
 
-  // Fill empty spots (TBD) in chronological order (future meetings only)
+  // Fill empty second slots (null) in chronological order (future meetings only)
   let fillIndex = 0;
   for (const mt of presentationSchedule) {
     const md = new Date(mt.date);
@@ -473,13 +505,13 @@ app.post('/api/admin/refill-schedule', (req, res) => {
     const mdYMD = new Date(md.getFullYear(), md.getMonth(), md.getDate());
     if (mdYMD < todayYMD) continue;
     if (fillIndex >= unscheduled.length) break;
-    if (!mt.presenter1 || mt.presenter1 === 'TBD') {
+    if (!mt.presenter1) {
       const mem = unscheduled[fillIndex++];
       mt.presenter1 = mem.name;
       mt.presenter1Email = mem.email;
       if (fillIndex >= unscheduled.length) break;
     }
-    if (!mt.presenter2 || mt.presenter2 === 'TBD') {
+    if (!mt.presenter2) {
       if (fillIndex < unscheduled.length) {
         const mem = unscheduled[fillIndex++];
         mt.presenter2 = mem.name;
