@@ -226,6 +226,7 @@ app.get('/api/schedule', async (req, res) => {
   if (!initResolved) {
     try { await initPromise; } catch (_) {}
   }
+  res.set('Cache-Control', 'no-store');
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const upcoming = presentationSchedule.filter(m => {
@@ -352,6 +353,7 @@ app.post('/api/change-time', (req, res) => {
 });
 
 app.get('/api/members', (req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.json(groupMembers);
 });
 

@@ -37,7 +37,7 @@ function App() {
   const fetchSchedule = async () => {
     setIsLoading(true);
     try {
-      const response = await fetch('/api/schedule');
+      const response = await fetch('/api/schedule', { cache: 'no-store' });
       const data = await response.json();
       setSchedule(data);
       console.log('Schedule fetched:', data);
@@ -51,7 +51,7 @@ function App() {
 
   const fetchMembers = async () => {
     try {
-      const response = await fetch('/api/members');
+      const response = await fetch('/api/members', { cache: 'no-store' });
       const data = await response.json();
       setMembers(data);
     } catch (error) {
