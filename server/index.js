@@ -167,7 +167,8 @@ function checkAndUpdateSchedule() {
 }
 
 // Initialize members and schedule from persistence (or defaults)
-(async () => {
+let initResolved = false;
+const initPromise = (async () => {
   try {
     const storedMembers = await loadMembers();
     if (storedMembers && Array.isArray(storedMembers) && storedMembers.length > 0) {
@@ -191,6 +192,7 @@ function checkAndUpdateSchedule() {
       presentationSchedule = generateSchedule();
     }
   }
+  initResolved = true;
 })();
 
 // Cron job to run every Friday at 9 AM
@@ -220,7 +222,10 @@ app.post('/api/login', (req, res) => {
   }
 });
 
-app.get('/api/schedule', (req, res) => {
+app.get('/api/schedule', async (req, res) => {
+  if (!initResolved) {
+    try { await initPromise; } catch (_) {}
+  }
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const upcoming = presentationSchedule.filter(m => {
