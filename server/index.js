@@ -118,6 +118,78 @@ function composeFullScheduleEmailText() {
   return lines.join('\n');
 }
 
+// ---- Calendar invite (ICS) helpers ----
+function pad2(n) { return String(n).padStart(2, '0'); }
+
+function formatIcsLocal(dateStr, timeStr) {
+  // Returns local time format without Z, to be used with TZID
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const [hh, mm] = (timeStr || '09:00').split(':').map(Number);
+  return `${y}${pad2(m)}${pad2(d)}T${pad2(hh)}${pad2(mm)}00`;
+}
+
+function addMinutesToTimeStr(timeStr, addMinutes) {
+  const [hh, mm] = (timeStr || '09:00').split(':').map(Number);
+  const total = hh * 60 + mm + addMinutes;
+  const newH = Math.floor((total % (24 * 60) + (24 * 60)) % (24 * 60) / 60);
+  const newM = ((total % 60) + 60) % 60;
+  return `${pad2(newH)}:${pad2(newM)}`;
+}
+
+function buildICSForMeeting(meeting) {
+  const startLocal = formatIcsLocal(meeting.date, meeting.time || '09:00');
+  const endLocal = formatIcsLocal(meeting.date, addMinutesToTimeStr(meeting.time || '09:00', 120));
+  const dtStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.[0-9]{3}Z$/, 'Z').replace(/Z$/, 'Z');
+  const uid = `biospec-${meeting.date}-${(meeting.time || '09:00').replace(':','')}-${Math.random().toString(36).slice(2)}@scheduler`;
+  const summary = 'Biospec Group Meeting';
+  const description = `Presenters: ${meeting.presenter1 || 'TBD'}${meeting.presenter2 ? ` and ${meeting.presenter2}` : ''}\nZoom: ${ZOOM_LINK || ''}`;
+
+  // Minimal VTIMEZONE for Europe/Berlin
+  const vtimezone = [
+    'BEGIN:VTIMEZONE',
+    'TZID:Europe/Berlin',
+    'X-LIC-LOCATION:Europe/Berlin',
+    'BEGIN:DAYLIGHT',
+    'TZOFFSETFROM:+0100',
+    'TZOFFSETTO:+0200',
+    'TZNAME:CEST',
+    'DTSTART:19700329T020000',
+    'RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU',
+    'END:DAYLIGHT',
+    'BEGIN:STANDARD',
+    'TZOFFSETFROM:+0200',
+    'TZOFFSETTO:+0100',
+    'TZNAME:CET',
+    'DTSTART:19701025T030000',
+    'RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU',
+    'END:STANDARD',
+    'END:VTIMEZONE'
+  ].join('\n');
+
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'PRODID:-//Biospec Group//Meeting Scheduler//EN',
+    'VERSION:2.0',
+    'CALSCALE:GREGORIAN',
+    'METHOD:REQUEST',
+    vtimezone,
+    'BEGIN:VEVENT',
+    `UID:${uid}`,
+    `DTSTAMP:${dtStamp}`,
+    `DTSTART;TZID=Europe/Berlin:${startLocal}`,
+    `DTEND;TZID=Europe/Berlin:${endLocal}`,
+    `SUMMARY:${summary}`,
+    `DESCRIPTION:${description}`,
+    `ORGANIZER;CN=Biospec Group:mailto:${smtpUser || 'noreply@example.com'}`,
+    'LOCATION:Zoom',
+    'STATUS:CONFIRMED',
+    'TRANSP:OPAQUE',
+    'END:VEVENT',
+    'END:VCALENDAR'
+  ];
+  return lines.join('\n');
+}
+
 function checkAndUpdateSchedule() {
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -140,7 +212,18 @@ function checkAndUpdateSchedule() {
   if (meetingNextWeek) {
     // Case (2): Meeting next week -> remind everyone
     const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
-    Promise.allSettled(groupMembers.map(member => sendEmail(member.email, 'Biospec Group Meeting Reminder', reminderText)))
+    const ics = buildICSForMeeting(meetingNextWeek);
+    Promise.allSettled(groupMembers.map(member => transporter.sendMail({
+      from: smtpUser,
+      to: member.email,
+      subject: 'Biospec Group Meeting Reminder',
+      text: reminderText,
+      alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+      icalEvent: {
+        method: 'REQUEST',
+        content: ics
+      }
+    })))
       .then(results => {
         const failures = results.filter(r => r.status === 'rejected').length;
         if (failures > 0) console.warn(`[Email] ${failures} reminder(s) failed`);
@@ -156,9 +239,24 @@ function checkAndUpdateSchedule() {
 
     if (meetingInTwoWeeks) {
       const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
+      const ics = buildICSForMeeting(meetingInTwoWeeks);
       const tasks = [];
-      if (meetingInTwoWeeks.presenter1Email) tasks.push(sendEmail(meetingInTwoWeeks.presenter1Email, 'Presenter Reminder', reminderText));
-      if (meetingInTwoWeeks.presenter2Email) tasks.push(sendEmail(meetingInTwoWeeks.presenter2Email, 'Presenter Reminder', reminderText));
+      if (meetingInTwoWeeks.presenter1Email) tasks.push(transporter.sendMail({
+        from: smtpUser,
+        to: meetingInTwoWeeks.presenter1Email,
+        subject: 'Presenter Reminder',
+        text: reminderText,
+        alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+        icalEvent: { method: 'REQUEST', content: ics }
+      }));
+      if (meetingInTwoWeeks.presenter2Email) tasks.push(transporter.sendMail({
+        from: smtpUser,
+        to: meetingInTwoWeeks.presenter2Email,
+        subject: 'Presenter Reminder',
+        text: reminderText,
+        alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+        icalEvent: { method: 'REQUEST', content: ics }
+      }));
       Promise.allSettled(tasks).then(results => {
         const failures = results.filter(r => r.status === 'rejected').length;
         if (failures > 0) console.warn(`[Email] ${failures} presenter reminder(s) failed`);
@@ -256,10 +354,10 @@ app.post('/api/login', (req, res) => {
 });
 
 app.get('/api/schedule', async (req, res) => {
-  if (!initResolved) {
-    try { await initPromise; } catch (_) {}
-  }
-  res.set('Cache-Control', 'no-store');
+  await ensureInit();
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const upcoming = presentationSchedule.filter(m => {
@@ -406,10 +504,10 @@ app.post('/api/change-time', (req, res) => {
 });
 
 app.get('/api/members', async (req, res) => {
-  if (!initResolved) {
-    try { await initPromise; } catch (_) {}
-  }
-  res.set('Cache-Control', 'no-store');
+  await ensureInit();
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   res.json(groupMembers);
 });
 
@@ -736,9 +834,24 @@ app.post('/api/admin/send-presenter-reminder', (req, res) => {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
   const text = `Presenter Reminder\n\nYou are scheduled to present on ${upcoming.date} at ${upcoming.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
+  const ics = buildICSForMeeting(upcoming);
   const tasks = [];
-  if (upcoming.presenter1Email) tasks.push(sendEmail(upcoming.presenter1Email, 'Presenter Reminder', text));
-  if (upcoming.presenter2Email) tasks.push(sendEmail(upcoming.presenter2Email, 'Presenter Reminder', text));
+  if (upcoming.presenter1Email) tasks.push(transporter.sendMail({
+    from: smtpUser,
+    to: upcoming.presenter1Email,
+    subject: 'Presenter Reminder',
+    text,
+    alternatives: [{ content: text, contentType: 'text/plain' }],
+    icalEvent: { method: 'REQUEST', content: ics }
+  }));
+  if (upcoming.presenter2Email) tasks.push(transporter.sendMail({
+    from: smtpUser,
+    to: upcoming.presenter2Email,
+    subject: 'Presenter Reminder',
+    text,
+    alternatives: [{ content: text, contentType: 'text/plain' }],
+    icalEvent: { method: 'REQUEST', content: ics }
+  }));
   Promise.allSettled(tasks).then(results => {
     const failures = results.filter(r => r.status === 'rejected');
     return res.json({ success: failures.length === 0, failures: failures.length });
@@ -757,7 +870,15 @@ app.post('/api/admin/send-everyone-reminder', (req, res) => {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
   const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
-  Promise.allSettled(groupMembers.map(member => sendEmail(member.email, 'Biospec Group Meeting Reminder', text)))
+  const ics = buildICSForMeeting(upcoming);
+  Promise.allSettled(groupMembers.map(member => transporter.sendMail({
+    from: smtpUser,
+    to: member.email,
+    subject: 'Biospec Group Meeting Reminder',
+    text,
+    alternatives: [{ content: text, contentType: 'text/plain' }],
+    icalEvent: { method: 'REQUEST', content: ics }
+  })))
     .then(results => {
       const failures = results.filter(r => r.status === 'rejected');
       return res.json({ success: failures.length === 0, failures: failures.length });

@@ -522,7 +522,7 @@ function App() {
               {isLoading ? 'Refreshing...' : 'Refresh Schedule'}
             </button>
             {isAdmin && (
-              <button className="btn btn-primary" onClick={() => setShowAdminModal(true)}>
+              <button className="btn btn-primary" onClick={async () => { await fetchMembers(); setShowAdminModal(true); }}>
                 <Users size={20} />
                 Admin Panel
               </button>
