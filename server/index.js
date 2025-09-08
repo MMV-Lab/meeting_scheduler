@@ -272,26 +272,46 @@ app.get('/api/schedule', async (req, res) => {
 
 app.post('/api/swap-presenters', (req, res) => {
   const { date1, presenter1, date2, presenter2 } = req.body;
-  
+
+  if (!date1 || !date2 || !presenter1 || !presenter2) {
+    return res.status(400).json({ success: false, message: 'date1, presenter1, date2, presenter2 are required' });
+  }
+
   const meeting1 = presentationSchedule.find(m => m.date === date1);
   const meeting2 = presentationSchedule.find(m => m.date === date2);
-  
-  if (meeting1 && meeting2) {
-    // Swap presenters
-    const tempPresenter1 = meeting1.presenter1;
-    const tempPresenter2 = meeting1.presenter2;
-    
-    meeting1.presenter1 = presenter1;
-    meeting1.presenter2 = presenter2;
-    meeting2.presenter1 = tempPresenter1;
-    meeting2.presenter2 = tempPresenter2;
-    
-    saveSchedule(presentationSchedule).finally(() => {
-      res.json({ success: true, schedule: presentationSchedule });
-    });
-  } else {
-    res.status(400).json({ success: false, message: 'Invalid dates' });
+
+  if (!meeting1 || !meeting2) {
+    return res.status(400).json({ success: false, message: 'Invalid dates' });
   }
+
+  // Determine which slots the selected presenters occupy
+  const slot1 = meeting1.presenter1 === presenter1 ? 'presenter1'
+               : meeting1.presenter2 === presenter1 ? 'presenter2'
+               : null;
+  const slot2 = meeting2.presenter1 === presenter2 ? 'presenter1'
+               : meeting2.presenter2 === presenter2 ? 'presenter2'
+               : null;
+
+  if (!slot1) {
+    return res.status(400).json({ success: false, message: `Presenter ${presenter1} not found on ${date1}` });
+  }
+  if (!slot2) {
+    return res.status(400).json({ success: false, message: `Presenter ${presenter2} not found on ${date2}` });
+  }
+
+  // Swap only the selected slots (names and emails)
+  const tmpName = meeting1[slot1];
+  const tmpEmail = meeting1[`${slot1}Email`];
+
+  meeting1[slot1] = meeting2[slot2];
+  meeting1[`${slot1}Email`] = meeting2[`${slot2}Email`];
+
+  meeting2[slot2] = tmpName;
+  meeting2[`${slot2}Email`] = tmpEmail;
+
+  saveSchedule(presentationSchedule).finally(() => {
+    res.json({ success: true, schedule: presentationSchedule });
+  });
 });
 
 app.post('/api/skip-meeting', (req, res) => {
