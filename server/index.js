@@ -292,14 +292,16 @@ function checkAndUpdateSchedule() {
 }
 
 // Initialize members and schedule from persistence (or defaults)
-let initResolved = false;
-const initPromise = (async () => {
+let initializationComplete = false;
+const initializeData = async () => {
+  if (initializationComplete) {
+    return;
+  }
   try {
     const storedMembers = await loadMembers();
     if (storedMembers && Array.isArray(storedMembers) && storedMembers.length > 0) {
       groupMembers = storedMembers;
     } else {
-      // Persist default members on first run
       await saveMembers(groupMembers);
     }
 
@@ -311,24 +313,33 @@ const initPromise = (async () => {
       await saveSchedule(presentationSchedule);
     }
     console.log(`[Init] Loaded members: ${groupMembers.length}, meetings: ${presentationSchedule.length}`);
+    initializationComplete = true;
   } catch (e) {
     console.warn('[Init] Failed to load persisted state, using defaults', e);
     if (!presentationSchedule || presentationSchedule.length === 0) {
       presentationSchedule = generateSchedule();
     }
   }
-  initResolved = true;
-})();
+};
 
-async function ensureInit() {
-  if (!initResolved) {
-    try { await initPromise; } catch (_) {}
+const initializationPromise = initializeData();
+
+// Middleware to ensure data is loaded before handling requests
+const ensureDataLoaded = async (req, res, next) => {
+  try {
+    await initializationPromise;
+    next();
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server initialization failed' });
   }
-}
+};
 
 // Cron job to run every Friday at 9 AM
 // Note: In production, you might want to use a more reliable scheduling service
-cron.schedule('0 8 * * 5', checkAndUpdateSchedule, {
+cron.schedule('0 8 * * 5', async () => {
+  await initializationPromise; // Ensure data is loaded before running cron job
+  checkAndUpdateSchedule();
+}, {
   timezone: "Europe/Berlin"
 });
 
@@ -353,8 +364,7 @@ app.post('/api/login', (req, res) => {
   }
 });
 
-app.get('/api/schedule', async (req, res) => {
-  await ensureInit();
+app.get('/api/schedule', ensureDataLoaded, async (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
@@ -368,7 +378,7 @@ app.get('/api/schedule', async (req, res) => {
   res.json(upcoming);
 });
 
-app.post('/api/swap-presenters', (req, res) => {
+app.post('/api/swap-presenters', ensureDataLoaded, (req, res) => {
   const { date1, presenter1, date2, presenter2 } = req.body;
 
   if (!date1 || !date2 || !presenter1 || !presenter2) {
@@ -412,7 +422,7 @@ app.post('/api/swap-presenters', (req, res) => {
   });
 });
 
-app.post('/api/skip-meeting', (req, res) => {
+app.post('/api/skip-meeting', ensureDataLoaded, (req, res) => {
   const { date } = req.body;
   
   // Find the index of the meeting to skip
@@ -451,7 +461,7 @@ app.post('/api/skip-meeting', (req, res) => {
   });
 });
 
-app.post('/api/change-date', (req, res) => {
+app.post('/api/change-date', ensureDataLoaded, (req, res) => {
   const { oldDate, newDate } = req.body;
   
   const meetingIndex = presentationSchedule.findIndex(meeting => meeting.date === oldDate);
@@ -475,7 +485,7 @@ app.post('/api/change-date', (req, res) => {
   });
 });
 
-app.post('/api/change-time', (req, res) => {
+app.post('/api/change-time', ensureDataLoaded, (req, res) => {
   const { date, newTime, adminPasscode } = req.body;
   
   // Verify admin access
@@ -503,8 +513,7 @@ app.post('/api/change-time', (req, res) => {
   });
 });
 
-app.get('/api/members', async (req, res) => {
-  await ensureInit();
+app.get('/api/members', ensureDataLoaded, async (req, res) => {
   res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
@@ -512,7 +521,7 @@ app.get('/api/members', async (req, res) => {
 });
 
 // Admin endpoints for managing members and regenerating schedule
-app.post('/api/admin/add-member', (req, res) => {
+app.post('/api/admin/add-member', ensureDataLoaded, (req, res) => {
   const { member, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -530,7 +539,7 @@ app.post('/api/admin/add-member', (req, res) => {
   });
 });
 
-app.post('/api/admin/remove-member', (req, res) => {
+app.post('/api/admin/remove-member', ensureDataLoaded, (req, res) => {
   const { name, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -567,7 +576,7 @@ app.post('/api/admin/remove-member', (req, res) => {
 });
 
 // Remove a single presenter from a specific meeting (admin only)
-app.post('/api/admin/remove-presenter', (req, res) => {
+app.post('/api/admin/remove-presenter', ensureDataLoaded, (req, res) => {
   const { date, slot, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -599,7 +608,7 @@ app.post('/api/admin/remove-presenter', (req, res) => {
 });
 
 // Assign a specific member to a presenter slot on a specific date (admin only)
-app.post('/api/admin/assign-presenter', (req, res) => {
+app.post('/api/admin/assign-presenter', ensureDataLoaded, (req, res) => {
   const { date, slot, memberName, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -634,7 +643,7 @@ app.post('/api/admin/assign-presenter', (req, res) => {
   });
 });
 
-app.post('/api/admin/refill-schedule', (req, res) => {
+app.post('/api/admin/refill-schedule', ensureDataLoaded, (req, res) => {
   const { adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -705,7 +714,7 @@ app.post('/api/admin/refill-schedule', (req, res) => {
     return res.json({ success: true, schedule: presentationSchedule });
   });
 });
-app.post('/api/admin/update-members', (req, res) => {
+app.post('/api/admin/update-members', ensureDataLoaded, (req, res) => {
   const { members, adminPasscode } = req.body;
   
   // Verify admin access
@@ -747,7 +756,7 @@ app.post('/api/admin/update-members', (req, res) => {
   });
 });
 
-app.post('/api/admin/regenerate-schedule', async (req, res) => {
+app.post('/api/admin/regenerate-schedule', ensureDataLoaded, async (req, res) => {
   const { startDate, adminPasscode } = req.body;
   
   // Verify admin access
@@ -756,7 +765,6 @@ app.post('/api/admin/regenerate-schedule', async (req, res) => {
   }
   
   try {
-    await ensureInit();
     const start = startDate ? new Date(startDate) : new Date('2025-09-08');
     presentationSchedule = generateSchedule(start);
     currentRound = 1;
@@ -778,7 +786,7 @@ app.post('/api/admin/regenerate-schedule', async (req, res) => {
   }
 });
 
-app.get('/api/admin/export-members', (req, res) => {
+app.get('/api/admin/export-members', ensureDataLoaded, (req, res) => {
   const { adminPasscode } = req.query;
   
   // Verify admin access
@@ -794,7 +802,7 @@ app.get('/api/admin/export-members', (req, res) => {
 });
 
 // Export full schedule including past meetings
-app.get('/api/admin/schedule-full', (req, res) => {
+app.get('/api/admin/schedule-full', ensureDataLoaded, (req, res) => {
   const { adminPasscode } = req.query;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -803,12 +811,12 @@ app.get('/api/admin/schedule-full', (req, res) => {
 });
 
 // Simple healthcheck for cron/execution visibility
-app.get('/api/health', (req, res) => {
+app.get('/api/health', ensureDataLoaded, (req, res) => {
   res.json({ ok: true, now: new Date().toISOString(), nextMeeting: presentationSchedule[0] || null });
 });
 
 // Cron trigger endpoint (for Vercel Cron or manual invocation)
-app.post('/api/admin/run-reminder-check', (req, res) => {
+app.post('/api/admin/run-reminder-check', ensureDataLoaded, (req, res) => {
   const { adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -822,7 +830,7 @@ app.post('/api/admin/run-reminder-check', (req, res) => {
 });
 
 // Manual reminders
-app.post('/api/admin/send-presenter-reminder', (req, res) => {
+app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
   const { adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -858,7 +866,7 @@ app.post('/api/admin/send-presenter-reminder', (req, res) => {
   }).catch(() => res.json({ success: false }));
 });
 
-app.post('/api/admin/send-everyone-reminder', (req, res) => {
+app.post('/api/admin/send-everyone-reminder', ensureDataLoaded, (req, res) => {
   const { adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -893,5 +901,7 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log('Initial schedule generated:', presentationSchedule.length, 'meetings');
+  initializationPromise.then(() => {
+    console.log('Initial schedule generated:', presentationSchedule.length, 'meetings');
+  });
 });
