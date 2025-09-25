@@ -845,9 +845,23 @@ app.get('/api/health', ensureDataLoaded, (req, res) => {
 });
 
 // Cron trigger endpoint (for Vercel Cron or manual invocation)
-app.post('/api/admin/run-reminder-check', ensureDataLoaded, (req, res) => {
-  const { adminPasscode } = req.body;
-  if (adminPasscode !== ADMIN_PASSCODE) {
+function isReminderAuthorized(req) {
+  const token = req.body?.adminPasscode
+    || req.body?.cronSecret
+    || req.query?.adminPasscode
+    || req.query?.cronSecret
+    || req.headers['x-cron-secret'];
+  if (token && ADMIN_PASSCODE && token === ADMIN_PASSCODE) {
+    return true;
+  }
+  if (token && process.env.CRON_SECRET && token === process.env.CRON_SECRET) {
+    return true;
+  }
+  return false;
+}
+
+const runReminderHandler = (req, res) => {
+  if (!isReminderAuthorized(req)) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
   }
   try {
@@ -856,7 +870,10 @@ app.post('/api/admin/run-reminder-check', ensureDataLoaded, (req, res) => {
   } catch (e) {
     return res.status(500).json({ success: false, message: 'Failed to run reminder check' });
   }
-});
+};
+
+app.post('/api/admin/run-reminder-check', ensureDataLoaded, runReminderHandler);
+app.get('/api/admin/run-reminder-check', ensureDataLoaded, runReminderHandler);
 
 // Manual reminders
 app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {

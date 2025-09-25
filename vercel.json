@@ -22,5 +22,11 @@
       "src": "/(.*)",
       "dest": "/build/$1"
     }
+  ],
+  "crons": [
+    {
+      "path": "/api/admin/run-reminder-check?cronSecret=@cron_secret",
+      "schedule": "0 7 * * 5"
+    }
   ]
 }
