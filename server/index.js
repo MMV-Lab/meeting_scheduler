@@ -424,38 +424,67 @@ app.post('/api/swap-presenters', ensureDataLoaded, (req, res) => {
 
 app.post('/api/skip-meeting', ensureDataLoaded, (req, res) => {
   const { date } = req.body;
-  
-  // Find the index of the meeting to skip
-  const skipIndex = presentationSchedule.findIndex(meeting => meeting.date === date);
-  
+
+  const skipIndex = presentationSchedule.findIndex((meeting) => meeting.date === date);
+
   if (skipIndex === -1) {
     return res.status(400).json({ success: false, message: 'Meeting date not found' });
   }
-  
-  // Store the presenters from the skipped meeting
+
+  const skippedMeeting = presentationSchedule[skipIndex];
   const skippedPresenters = {
-    presenter1: presentationSchedule[skipIndex].presenter1,
-    presenter2: presentationSchedule[skipIndex].presenter2,
-    presenter1Email: presentationSchedule[skipIndex].presenter1Email,
-    presenter2Email: presentationSchedule[skipIndex].presenter2Email
+    presenter1: skippedMeeting.presenter1,
+    presenter2: skippedMeeting.presenter2,
+    presenter1Email: skippedMeeting.presenter1Email,
+    presenter2Email: skippedMeeting.presenter2Email
   };
-  
-  // Shift all presenters forward by one slot, starting from the skipped meeting
-  for (let i = skipIndex; i < presentationSchedule.length - 1; i++) {
-    presentationSchedule[i].presenter1 = presentationSchedule[i + 1].presenter1;
-    presentationSchedule[i].presenter2 = presentationSchedule[i + 1].presenter2;
-    presentationSchedule[i].presenter1Email = presentationSchedule[i + 1].presenter1Email;
-    presentationSchedule[i].presenter2Email = presentationSchedule[i + 1].presenter2Email;
+  const skippedTime = skippedMeeting.time || '09:00';
+
+  if (presentationSchedule.length === 1) {
+    const baseDate = new Date(skippedMeeting.date);
+    baseDate.setDate(baseDate.getDate() + 14);
+    presentationSchedule[0] = {
+      ...presentationSchedule[0],
+      date: baseDate.toISOString().split('T')[0],
+      time: skippedTime,
+      presenter1: skippedPresenters.presenter1,
+      presenter2: skippedPresenters.presenter2,
+      presenter1Email: skippedPresenters.presenter1Email,
+      presenter2Email: skippedPresenters.presenter2Email
+    };
+  } else {
+    for (let i = skipIndex; i < presentationSchedule.length - 1; i++) {
+      const nextMeeting = presentationSchedule[i + 1];
+      presentationSchedule[i] = {
+        ...presentationSchedule[i],
+        date: nextMeeting.date,
+        time: nextMeeting.time,
+        presenter1: nextMeeting.presenter1,
+        presenter2: nextMeeting.presenter2,
+        presenter1Email: nextMeeting.presenter1Email,
+        presenter2Email: nextMeeting.presenter2Email
+      };
+    }
+
+    const lastIndex = presentationSchedule.length - 1;
+    const baseDateStr = presentationSchedule[lastIndex - 1]
+      ? presentationSchedule[lastIndex - 1].date
+      : skippedMeeting.date;
+    const baseDate = new Date(baseDateStr);
+    baseDate.setDate(baseDate.getDate() + 14);
+
+    presentationSchedule[lastIndex] = {
+      ...presentationSchedule[lastIndex],
+      date: baseDate.toISOString().split('T')[0],
+      time: skippedTime,
+      presenter1: skippedPresenters.presenter1,
+      presenter2: skippedPresenters.presenter2,
+      presenter1Email: skippedPresenters.presenter1Email,
+      presenter2Email: skippedPresenters.presenter2Email
+    };
   }
-  
-  // Put the skipped meeting's presenters in the last slot
-  const lastIndex = presentationSchedule.length - 1;
-  presentationSchedule[lastIndex].presenter1 = skippedPresenters.presenter1;
-  presentationSchedule[lastIndex].presenter2 = skippedPresenters.presenter2;
-  presentationSchedule[lastIndex].presenter1Email = skippedPresenters.presenter1Email;
-  presentationSchedule[lastIndex].presenter2Email = skippedPresenters.presenter2Email;
-  
-  console.log(`Meeting skipped: ${date}. Presenters shifted forward. Schedule still has ${presentationSchedule.length} meetings.`);
+
+  console.log(`Meeting skipped: ${date}. Date removed and presenters shifted. Schedule has ${presentationSchedule.length} meetings.`);
   saveSchedule(presentationSchedule).finally(() => {
     res.json({ success: true, schedule: presentationSchedule });
   });
