@@ -25,7 +25,7 @@
   ],
   "crons": [
     {
-      "path": "/api/admin/run-reminder-check?cronSecret=@CRON_SECRET",
+      "path": "/api/admin/run-reminder-check",
       "schedule": "0 7 * * 5"
     }
   ]

@@ -846,17 +846,32 @@ app.get('/api/health', ensureDataLoaded, (req, res) => {
 
 // Cron trigger endpoint (for Vercel Cron or manual invocation)
 function isReminderAuthorized(req) {
-  const token = req.body?.adminPasscode
-    || req.body?.cronSecret
-    || req.query?.adminPasscode
-    || req.query?.cronSecret
-    || req.headers['x-cron-secret'];
+  // Check if request is from Vercel Cron
+  const isVercelCron = req.headers['x-vercel-cron'] === '1';
+  if (isVercelCron) {
+    // Optionally verify CRON_SECRET if configured
+    if (process.env.CRON_SECRET) {
+      const authHeader = req.headers['authorization'];
+      if (authHeader === `Bearer ${process.env.CRON_SECRET}`) {
+        return true;
+      }
+      // For backwards compatibility, also check other locations
+      const token = req.body?.cronSecret || req.query?.cronSecret;
+      if (token === process.env.CRON_SECRET) {
+        return true;
+      }
+    } else {
+      // If CRON_SECRET is not set, trust the x-vercel-cron header
+      return true;
+    }
+  }
+  
+  // Check for manual invocation with admin passcode
+  const token = req.body?.adminPasscode || req.query?.adminPasscode;
   if (token && ADMIN_PASSCODE && token === ADMIN_PASSCODE) {
     return true;
   }
-  if (token && process.env.CRON_SECRET && token === process.env.CRON_SECRET) {
-    return true;
-  }
+  
   return false;
 }
 
