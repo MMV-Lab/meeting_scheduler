@@ -191,15 +191,22 @@ function buildICSForMeeting(meeting) {
 }
 
 function checkAndUpdateSchedule() {
+  console.log('[Schedule Check] Starting reminder check...');
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  console.log('[Schedule Check] Today:', todayYMD.toISOString().split('T')[0]);
 
   // Clean up past meetings (keep only today or future)
+  const beforeCleanup = presentationSchedule.length;
   presentationSchedule = presentationSchedule.filter(m => {
     const d = new Date(m.date);
     const dYMD = new Date(d.getFullYear(), d.getMonth(), d.getDate());
     return dYMD >= todayYMD;
   });
+  if (beforeCleanup !== presentationSchedule.length) {
+    console.log(`[Schedule Check] Cleaned up ${beforeCleanup - presentationSchedule.length} past meetings`);
+  }
+  console.log(`[Schedule Check] Upcoming meetings: ${presentationSchedule.length}`);
 
   // Compute next Monday relative to today
   const nextMonday = new Date(todayYMD);
@@ -207,10 +214,13 @@ function checkAndUpdateSchedule() {
   nextMonday.setDate(nextMonday.getDate() + daysUntilMonday);
 
   const nextMondayISO = nextMonday.toISOString().split('T')[0];
+  console.log('[Schedule Check] Next Monday:', nextMondayISO);
   const meetingNextWeek = presentationSchedule.find(m => m.date === nextMondayISO);
 
   if (meetingNextWeek) {
     // Case (2): Meeting next week -> remind everyone
+    console.log(`[Schedule Check] Found meeting next Monday (${nextMondayISO}):`, meetingNextWeek);
+    console.log(`[Email] Sending meeting reminder to all ${groupMembers.length} members...`);
     const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
     const ics = buildICSForMeeting(meetingNextWeek);
     Promise.allSettled(groupMembers.map(member => transporter.sendMail({
@@ -226,52 +236,78 @@ function checkAndUpdateSchedule() {
     })))
       .then(results => {
         const failures = results.filter(r => r.status === 'rejected').length;
+        const successes = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`[Email] Meeting reminders sent: ${successes} successful, ${failures} failed`);
         if (failures > 0) console.warn(`[Email] ${failures} reminder(s) failed`);
-      });
+      })
+      .catch(err => console.error('[Email] Error sending meeting reminders:', err));
   } else {
     // Case (1): No meeting next week -> remind presenters for two weeks from now
+    console.log(`[Schedule Check] No meeting on next Monday (${nextMondayISO})`);
     const mondayAfterNext = new Date(nextMonday);
     mondayAfterNext.setDate(mondayAfterNext.getDate() + 7);
     const mondayAfterNextISO = mondayAfterNext.toISOString().split('T')[0];
+    console.log('[Schedule Check] Checking for meeting two weeks out:', mondayAfterNextISO);
 
     const meetingInTwoWeeks = presentationSchedule.find(m => m.date === mondayAfterNextISO)
       || presentationSchedule.find(m => new Date(m.date) > todayYMD);
 
     if (meetingInTwoWeeks) {
+      console.log(`[Schedule Check] Found upcoming meeting (${meetingInTwoWeeks.date}):`, meetingInTwoWeeks);
+      console.log('[Email] Sending presenter reminders...');
       const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
       const ics = buildICSForMeeting(meetingInTwoWeeks);
       const tasks = [];
-      if (meetingInTwoWeeks.presenter1Email) tasks.push(transporter.sendMail({
-        from: smtpUser,
-        to: meetingInTwoWeeks.presenter1Email,
-        subject: 'Presenter Reminder',
-        text: reminderText,
-        alternatives: [{ content: reminderText, contentType: 'text/plain' }],
-        icalEvent: { method: 'REQUEST', content: ics }
-      }));
-      if (meetingInTwoWeeks.presenter2Email) tasks.push(transporter.sendMail({
-        from: smtpUser,
-        to: meetingInTwoWeeks.presenter2Email,
-        subject: 'Presenter Reminder',
-        text: reminderText,
-        alternatives: [{ content: reminderText, contentType: 'text/plain' }],
-        icalEvent: { method: 'REQUEST', content: ics }
-      }));
-      Promise.allSettled(tasks).then(results => {
-        const failures = results.filter(r => r.status === 'rejected').length;
-        if (failures > 0) console.warn(`[Email] ${failures} presenter reminder(s) failed`);
-      });
+      if (meetingInTwoWeeks.presenter1Email) {
+        console.log(`[Email] Sending reminder to presenter 1: ${meetingInTwoWeeks.presenter1Email}`);
+        tasks.push(transporter.sendMail({
+          from: smtpUser,
+          to: meetingInTwoWeeks.presenter1Email,
+          subject: 'Presenter Reminder',
+          text: reminderText,
+          alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+          icalEvent: { method: 'REQUEST', content: ics }
+        }));
+      }
+      if (meetingInTwoWeeks.presenter2Email) {
+        console.log(`[Email] Sending reminder to presenter 2: ${meetingInTwoWeeks.presenter2Email}`);
+        tasks.push(transporter.sendMail({
+          from: smtpUser,
+          to: meetingInTwoWeeks.presenter2Email,
+          subject: 'Presenter Reminder',
+          text: reminderText,
+          alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+          icalEvent: { method: 'REQUEST', content: ics }
+        }));
+      }
+      if (tasks.length > 0) {
+        Promise.allSettled(tasks).then(results => {
+          const failures = results.filter(r => r.status === 'rejected').length;
+          const successes = results.filter(r => r.status === 'fulfilled').length;
+          console.log(`[Email] Presenter reminders sent: ${successes} successful, ${failures} failed`);
+          if (failures > 0) console.warn(`[Email] ${failures} presenter reminder(s) failed`);
+        }).catch(err => console.error('[Email] Error sending presenter reminders:', err));
+      } else {
+        console.log('[Email] No presenter emails found for upcoming meeting');
+      }
+    } else {
+      console.log('[Schedule Check] No upcoming meetings found');
     }
   }
 
   // Send weekly full schedule report to designated email
-  try {
-    const reportText = composeFullScheduleEmailText();
-    sendEmail(SCHEDULE_REPORT_EMAIL, 'Biospec Full Schedule (Weekly Report)', reportText)
-      .then(() => console.log(`[Email] Full schedule report sent to ${SCHEDULE_REPORT_EMAIL}`))
-      .catch((e) => console.warn('[Email] Failed to send full schedule report', e));
-  } catch (e) {
-    console.warn('[Email] Exception preparing full schedule report', e);
+  if (SCHEDULE_REPORT_EMAIL) {
+    console.log(`[Email] Preparing full schedule report for ${SCHEDULE_REPORT_EMAIL}...`);
+    try {
+      const reportText = composeFullScheduleEmailText();
+      sendEmail(SCHEDULE_REPORT_EMAIL, 'Biospec Full Schedule (Weekly Report)', reportText)
+        .then(() => console.log(`[Email] Full schedule report sent to ${SCHEDULE_REPORT_EMAIL}`))
+        .catch((e) => console.warn('[Email] Failed to send full schedule report:', e.message));
+    } catch (e) {
+      console.warn('[Email] Exception preparing full schedule report:', e.message);
+    }
+  } else {
+    console.log('[Email] SCHEDULE_REPORT_EMAIL not configured, skipping full schedule report');
   }
 
   // Optional: extend schedule if too few unscheduled members remain (keep prior behavior)
@@ -288,7 +324,15 @@ function checkAndUpdateSchedule() {
     const newSchedule = generateSchedule(lastMeetingDate);
     presentationSchedule = [...presentationSchedule, ...newSchedule];
     console.log('New round generated:', currentRound);
+    console.log(`[Schedule Check] Added ${newSchedule.length} new meetings to schedule`);
+    
+    // Save the updated schedule
+    saveSchedule(presentationSchedule).catch(e => 
+      console.error('[Schedule Check] Failed to save updated schedule:', e)
+    );
   }
+  
+  console.log('[Schedule Check] Reminder check completed');
 }
 
 // Initialize members and schedule from persistence (or defaults)
