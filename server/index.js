@@ -190,7 +190,7 @@ function buildICSForMeeting(meeting) {
   return lines.join('\n');
 }
 
-function checkAndUpdateSchedule() {
+async function checkAndUpdateSchedule() {
   console.log('[Schedule Check] Starting reminder check...');
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -223,7 +223,7 @@ function checkAndUpdateSchedule() {
     console.log(`[Email] Sending meeting reminder to all ${groupMembers.length} members...`);
     const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
     const ics = buildICSForMeeting(meetingNextWeek);
-    Promise.allSettled(groupMembers.map(member => transporter.sendMail({
+    const results = await Promise.allSettled(groupMembers.map(member => transporter.sendMail({
       from: smtpUser,
       to: member.email,
       subject: 'Biospec Group Meeting Reminder',
@@ -233,14 +233,17 @@ function checkAndUpdateSchedule() {
         method: 'REQUEST',
         content: ics
       }
-    })))
-      .then(results => {
-        const failures = results.filter(r => r.status === 'rejected').length;
-        const successes = results.filter(r => r.status === 'fulfilled').length;
-        console.log(`[Email] Meeting reminders sent: ${successes} successful, ${failures} failed`);
-        if (failures > 0) console.warn(`[Email] ${failures} reminder(s) failed`);
-      })
-      .catch(err => console.error('[Email] Error sending meeting reminders:', err));
+    })));
+    
+    const failures = results.filter(r => r.status === 'rejected').length;
+    const successes = results.filter(r => r.status === 'fulfilled').length;
+    console.log(`[Email] Meeting reminders sent: ${successes} successful, ${failures} failed`);
+    if (failures > 0) {
+      console.warn(`[Email] ${failures} reminder(s) failed`);
+      results.filter(r => r.status === 'rejected').forEach((r, i) => {
+        console.warn(`[Email] Failed to send to ${groupMembers[i]?.email}:`, r.reason?.message || r.reason);
+      });
+    }
   } else {
     // Case (1): No meeting next week -> remind presenters for two weeks from now
     console.log(`[Schedule Check] No meeting on next Monday (${nextMondayISO})`);
@@ -281,12 +284,16 @@ function checkAndUpdateSchedule() {
         }));
       }
       if (tasks.length > 0) {
-        Promise.allSettled(tasks).then(results => {
-          const failures = results.filter(r => r.status === 'rejected').length;
-          const successes = results.filter(r => r.status === 'fulfilled').length;
-          console.log(`[Email] Presenter reminders sent: ${successes} successful, ${failures} failed`);
-          if (failures > 0) console.warn(`[Email] ${failures} presenter reminder(s) failed`);
-        }).catch(err => console.error('[Email] Error sending presenter reminders:', err));
+        const results = await Promise.allSettled(tasks);
+        const failures = results.filter(r => r.status === 'rejected').length;
+        const successes = results.filter(r => r.status === 'fulfilled').length;
+        console.log(`[Email] Presenter reminders sent: ${successes} successful, ${failures} failed`);
+        if (failures > 0) {
+          console.warn(`[Email] ${failures} presenter reminder(s) failed`);
+          results.filter(r => r.status === 'rejected').forEach(r => {
+            console.warn(`[Email] Failed:`, r.reason?.message || r.reason);
+          });
+        }
       } else {
         console.log('[Email] No presenter emails found for upcoming meeting');
       }
@@ -300,11 +307,10 @@ function checkAndUpdateSchedule() {
     console.log(`[Email] Preparing full schedule report for ${SCHEDULE_REPORT_EMAIL}...`);
     try {
       const reportText = composeFullScheduleEmailText();
-      sendEmail(SCHEDULE_REPORT_EMAIL, 'Biospec Full Schedule (Weekly Report)', reportText)
-        .then(() => console.log(`[Email] Full schedule report sent to ${SCHEDULE_REPORT_EMAIL}`))
-        .catch((e) => console.warn('[Email] Failed to send full schedule report:', e.message));
+      await sendEmail(SCHEDULE_REPORT_EMAIL, 'Biospec Full Schedule (Weekly Report)', reportText);
+      console.log(`[Email] Full schedule report sent to ${SCHEDULE_REPORT_EMAIL}`);
     } catch (e) {
-      console.warn('[Email] Exception preparing full schedule report:', e.message);
+      console.warn('[Email] Failed to send full schedule report:', e.message);
     }
   } else {
     console.log('[Email] SCHEDULE_REPORT_EMAIL not configured, skipping full schedule report');
@@ -327,9 +333,11 @@ function checkAndUpdateSchedule() {
     console.log(`[Schedule Check] Added ${newSchedule.length} new meetings to schedule`);
     
     // Save the updated schedule
-    saveSchedule(presentationSchedule).catch(e => 
-      console.error('[Schedule Check] Failed to save updated schedule:', e)
-    );
+    try {
+      await saveSchedule(presentationSchedule);
+    } catch (e) {
+      console.error('[Schedule Check] Failed to save updated schedule:', e);
+    }
   }
   
   console.log('[Schedule Check] Reminder check completed');
@@ -339,30 +347,52 @@ function checkAndUpdateSchedule() {
 let initializationComplete = false;
 const initializeData = async () => {
   if (initializationComplete) {
+    console.log('[Init] Already initialized, skipping');
     return;
   }
+  
+  console.log('[Init] Starting initialization...');
+  console.log('[Init] KV configured:', require('./persistence').isKVConfigured());
+  
   try {
+    console.log('[Init] Loading members from storage...');
     const storedMembers = await loadMembers();
+    
     if (storedMembers && Array.isArray(storedMembers) && storedMembers.length > 0) {
+      console.log(`[Init] Found ${storedMembers.length} stored members, using them`);
       groupMembers = storedMembers;
     } else {
+      console.log(`[Init] No stored members found, saving default ${groupMembers.length} members`);
       await saveMembers(groupMembers);
     }
 
+    console.log('[Init] Loading schedule from storage...');
     const storedSchedule = await loadSchedule();
+    
     if (storedSchedule && Array.isArray(storedSchedule) && storedSchedule.length > 0) {
+      console.log(`[Init] Found ${storedSchedule.length} stored meetings, using them`);
       presentationSchedule = storedSchedule;
     } else {
+      console.log('[Init] No stored schedule found, generating new schedule');
       presentationSchedule = generateSchedule();
       await saveSchedule(presentationSchedule);
     }
-    console.log(`[Init] Loaded members: ${groupMembers.length}, meetings: ${presentationSchedule.length}`);
+    
+    console.log(`[Init] ✓ Initialization complete: ${groupMembers.length} members, ${presentationSchedule.length} meetings`);
+    console.log(`[Init] Member emails: ${groupMembers.map(m => m.email).join(', ')}`);
     initializationComplete = true;
   } catch (e) {
-    console.warn('[Init] Failed to load persisted state, using defaults', e);
+    console.error('[Init] ✗ Failed to load persisted state:', e.message);
+    console.error('[Init] Error details:', e);
+    
+    // If we failed to load, still generate a schedule if needed
     if (!presentationSchedule || presentationSchedule.length === 0) {
+      console.warn('[Init] Generating fallback schedule with default members');
       presentationSchedule = generateSchedule();
     }
+    
+    console.warn(`[Init] Using fallback: ${groupMembers.length} members, ${presentationSchedule.length} meetings`);
+    initializationComplete = true; // Mark as complete even on error to avoid infinite retries
   }
 };
 
@@ -382,7 +412,7 @@ const ensureDataLoaded = async (req, res, next) => {
 // Note: In production, you might want to use a more reliable scheduling service
 cron.schedule('0 8 * * 5', async () => {
   await initializationPromise; // Ensure data is loaded before running cron job
-  checkAndUpdateSchedule();
+  await checkAndUpdateSchedule();
 }, {
   timezone: "Europe/Berlin"
 });
@@ -917,7 +947,7 @@ function isReminderAuthorized(req) {
   return false;
 }
 
-const runReminderHandler = (req, res) => {
+const runReminderHandler = async (req, res) => {
   console.log('[Cron Handler] Request received:', {
     method: req.method,
     path: req.path,
@@ -936,7 +966,7 @@ const runReminderHandler = (req, res) => {
   
   console.log('[Cron Handler] Authorization successful - running reminder check');
   try {
-    checkAndUpdateSchedule();
+    await checkAndUpdateSchedule();
     console.log('[Cron Handler] Reminder check completed successfully');
     return res.json({ success: true, message: 'Reminder check completed', timestamp: new Date().toISOString() });
   } catch (e) {

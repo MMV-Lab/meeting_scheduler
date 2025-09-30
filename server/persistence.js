@@ -20,25 +20,69 @@ function getKVBase() {
   return { url, token };
 }
 
-async function kvGet(key) {
+async function kvGet(key, retries = 2) {
   const { url, token } = getKVBase();
-  const resp = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  if (!resp.ok) return null;
-  const data = await resp.json();
-  return data.result ? JSON.parse(data.result) : null;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const resp = await fetch(`${url}/get/${encodeURIComponent(key)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000) // 5 second timeout
+      });
+      if (!resp.ok) {
+        if (attempt < retries) {
+          console.log(`[KV] Fetch failed for ${key}, attempt ${attempt + 1}/${retries + 1}, retrying...`);
+          await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s before retry
+          continue;
+        }
+        return null;
+      }
+      const data = await resp.json();
+      return data.result ? JSON.parse(data.result) : null;
+    } catch (error) {
+      if (attempt < retries) {
+        console.log(`[KV] Error fetching ${key} (${error.message}), attempt ${attempt + 1}/${retries + 1}, retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      console.error(`[KV] Failed to fetch ${key} after ${retries + 1} attempts:`, error.message);
+      throw error;
+    }
+  }
+  return null;
 }
 
-async function kvSet(key, value) {
+async function kvSet(key, value, retries = 2) {
   const { url, token } = getKVBase();
   const val = encodeURIComponent(JSON.stringify(value));
-  // Upstash Redis REST uses command-style paths, e.g. /set/{key}/{value}
-  const resp = await fetch(`${url}/set/${encodeURIComponent(key)}/${val}`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${token}` }
-  });
-  return resp.ok;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      // Upstash Redis REST uses command-style paths, e.g. /set/{key}/{value}
+      const resp = await fetch(`${url}/set/${encodeURIComponent(key)}/${val}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000) // 5 second timeout
+      });
+      if (resp.ok) return true;
+      
+      if (attempt < retries) {
+        console.log(`[KV] Set failed for ${key}, attempt ${attempt + 1}/${retries + 1}, retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      return false;
+    } catch (error) {
+      if (attempt < retries) {
+        console.log(`[KV] Error setting ${key} (${error.message}), attempt ${attempt + 1}/${retries + 1}, retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      console.error(`[KV] Failed to set ${key} after ${retries + 1} attempts:`, error.message);
+      throw error;
+    }
+  }
+  return false;
 }
 
 async function loadMembers() {
