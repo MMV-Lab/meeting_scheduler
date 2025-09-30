@@ -847,43 +847,57 @@ app.get('/api/health', ensureDataLoaded, (req, res) => {
 // Cron trigger endpoint (for Vercel Cron or manual invocation)
 function isReminderAuthorized(req) {
   // Check if request is from Vercel Cron
+  // Vercel automatically adds this header to cron requests
   const isVercelCron = req.headers['x-vercel-cron'] === '1';
   if (isVercelCron) {
-    // Optionally verify CRON_SECRET if configured
-    if (process.env.CRON_SECRET) {
-      const authHeader = req.headers['authorization'];
-      if (authHeader === `Bearer ${process.env.CRON_SECRET}`) {
-        return true;
-      }
-      // For backwards compatibility, also check other locations
-      const token = req.body?.cronSecret || req.query?.cronSecret;
-      if (token === process.env.CRON_SECRET) {
-        return true;
-      }
-    } else {
-      // If CRON_SECRET is not set, trust the x-vercel-cron header
-      return true;
-    }
+    // Trust the x-vercel-cron header - it can only be set by Vercel's infrastructure
+    console.log('[Cron Auth] Request authenticated via x-vercel-cron header');
+    return true;
   }
   
   // Check for manual invocation with admin passcode
   const token = req.body?.adminPasscode || req.query?.adminPasscode;
   if (token && ADMIN_PASSCODE && token === ADMIN_PASSCODE) {
+    console.log('[Cron Auth] Request authenticated via ADMIN_PASSCODE');
     return true;
   }
   
+  // Check for manual invocation with CRON_SECRET (optional, for backwards compatibility)
+  const cronSecret = req.body?.cronSecret || req.query?.cronSecret || req.headers['authorization']?.replace('Bearer ', '');
+  if (cronSecret && process.env.CRON_SECRET && cronSecret === process.env.CRON_SECRET) {
+    console.log('[Cron Auth] Request authenticated via CRON_SECRET');
+    return true;
+  }
+  
+  console.log('[Cron Auth] Authentication failed - no valid credentials found');
   return false;
 }
 
 const runReminderHandler = (req, res) => {
+  console.log('[Cron Handler] Request received:', {
+    method: req.method,
+    path: req.path,
+    headers: {
+      'x-vercel-cron': req.headers['x-vercel-cron'],
+      'user-agent': req.headers['user-agent']
+    },
+    hasAdminPasscode: !!(req.body?.adminPasscode || req.query?.adminPasscode),
+    hasCronSecret: !!(req.body?.cronSecret || req.query?.cronSecret)
+  });
+  
   if (!isReminderAuthorized(req)) {
-    return res.status(403).json({ success: false, message: 'Admin access required' });
+    console.log('[Cron Handler] Authorization failed - returning 403');
+    return res.status(403).json({ success: false, message: 'Unauthorized - Admin access or Vercel Cron required' });
   }
+  
+  console.log('[Cron Handler] Authorization successful - running reminder check');
   try {
     checkAndUpdateSchedule();
-    return res.json({ success: true });
+    console.log('[Cron Handler] Reminder check completed successfully');
+    return res.json({ success: true, message: 'Reminder check completed', timestamp: new Date().toISOString() });
   } catch (e) {
-    return res.status(500).json({ success: false, message: 'Failed to run reminder check' });
+    console.error('[Cron Handler] Error running reminder check:', e);
+    return res.status(500).json({ success: false, message: 'Failed to run reminder check', error: e.message });
   }
 };
 
