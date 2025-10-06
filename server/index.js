@@ -221,14 +221,27 @@ async function checkAndUpdateSchedule() {
     // Case (2): Meeting next week -> remind everyone
     console.log(`[Schedule Check] Found meeting next Monday (${nextMondayISO}):`, meetingNextWeek);
     console.log(`[Email] Sending meeting reminder to all ${groupMembers.length} members...`);
-    const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
+    
+    const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
+    
+    const reminderHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
+        <p><strong>Date:</strong> ${meetingNextWeek.date}</p>
+        <p><strong>Time:</strong> ${meetingNextWeek.time}</p>
+        <p><strong>Presenters:</strong> ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}</p>
+        <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
+        <p style="margin-top: 20px;">Please join us for the group meeting!</p>
+      </div>
+    `;
+    
     const ics = buildICSForMeeting(meetingNextWeek);
     const results = await Promise.allSettled(groupMembers.map(member => transporter.sendMail({
       from: smtpUser,
       to: member.email,
       subject: 'Biospec Group Meeting Reminder',
       text: reminderText,
-      alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+      html: reminderHtml,
       icalEvent: {
         method: 'REQUEST',
         content: ics
@@ -258,7 +271,18 @@ async function checkAndUpdateSchedule() {
     if (meetingInTwoWeeks) {
       console.log(`[Schedule Check] Found upcoming meeting (${meetingInTwoWeeks.date}):`, meetingInTwoWeeks);
       console.log('[Email] Sending presenter reminders...');
-      const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
+      
+      const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK || 'Not configured'}`;
+      
+      const reminderHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #e74c3c;">Presenter Reminder</h2>
+          <p>You are scheduled to present on <strong>${meetingInTwoWeeks.date}</strong> at <strong>${meetingInTwoWeeks.time}</strong>.</p>
+          <p>Please prepare your talk.</p>
+          <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none; font-size: 16px;">${ZOOM_LINK || 'Not configured'}</a></p>
+        </div>
+      `;
+      
       const ics = buildICSForMeeting(meetingInTwoWeeks);
       const tasks = [];
       if (meetingInTwoWeeks.presenter1Email) {
@@ -268,7 +292,7 @@ async function checkAndUpdateSchedule() {
           to: meetingInTwoWeeks.presenter1Email,
           subject: 'Presenter Reminder',
           text: reminderText,
-          alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+          html: reminderHtml,
           icalEvent: { method: 'REQUEST', content: ics }
         }));
       }
@@ -279,7 +303,7 @@ async function checkAndUpdateSchedule() {
           to: meetingInTwoWeeks.presenter2Email,
           subject: 'Presenter Reminder',
           text: reminderText,
-          alternatives: [{ content: reminderText, contentType: 'text/plain' }],
+          html: reminderHtml,
           icalEvent: { method: 'REQUEST', content: ics }
         }));
       }
@@ -990,7 +1014,15 @@ app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
   if (!upcoming) {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
-  const text = `Presenter Reminder\n\nYou are scheduled to present on ${upcoming.date} at ${upcoming.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK}`;
+  const text = `Presenter Reminder\n\nYou are scheduled to present on ${upcoming.date} at ${upcoming.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK || 'Not configured'}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #e74c3c;">Presenter Reminder</h2>
+      <p>You are scheduled to present on <strong>${upcoming.date}</strong> at <strong>${upcoming.time}</strong>.</p>
+      <p>Please prepare your talk.</p>
+      <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none; font-size: 16px;">${ZOOM_LINK || 'Not configured'}</a></p>
+    </div>
+  `;
   const ics = buildICSForMeeting(upcoming);
   const tasks = [];
   if (upcoming.presenter1Email) tasks.push(transporter.sendMail({
@@ -998,7 +1030,7 @@ app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
     to: upcoming.presenter1Email,
     subject: 'Presenter Reminder',
     text,
-    alternatives: [{ content: text, contentType: 'text/plain' }],
+    html,
     icalEvent: { method: 'REQUEST', content: ics }
   }));
   if (upcoming.presenter2Email) tasks.push(transporter.sendMail({
@@ -1006,7 +1038,7 @@ app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
     to: upcoming.presenter2Email,
     subject: 'Presenter Reminder',
     text,
-    alternatives: [{ content: text, contentType: 'text/plain' }],
+    html,
     icalEvent: { method: 'REQUEST', content: ics }
   }));
   Promise.allSettled(tasks).then(results => {
@@ -1026,14 +1058,24 @@ app.post('/api/admin/send-everyone-reminder', ensureDataLoaded, (req, res) => {
   if (!upcoming) {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
-  const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK}\n\nPlease join us for the group meeting!`;
+  const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
+      <p><strong>Date:</strong> ${upcoming.date}</p>
+      <p><strong>Time:</strong> ${upcoming.time}</p>
+      <p><strong>Presenters:</strong> ${upcoming.presenter1} and ${upcoming.presenter2}</p>
+      <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
+      <p style="margin-top: 20px;">Please join us for the group meeting!</p>
+    </div>
+  `;
   const ics = buildICSForMeeting(upcoming);
   Promise.allSettled(groupMembers.map(member => transporter.sendMail({
     from: smtpUser,
     to: member.email,
     subject: 'Biospec Group Meeting Reminder',
     text,
-    alternatives: [{ content: text, contentType: 'text/plain' }],
+    html,
     icalEvent: { method: 'REQUEST', content: ics }
   })))
     .then(results => {
