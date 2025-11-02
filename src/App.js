@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { format } from 'date-fns';
-import { Calendar, Users, X, RotateCcw, Edit3 } from 'lucide-react';
+import { Calendar, Users, X, RotateCcw, Edit3, Trash2 } from 'lucide-react';
 import './App.css';
 
 function App() {
@@ -485,6 +485,36 @@ function App() {
     }
   };
 
+  // Admin: delete a meeting completely
+  const deleteMeeting = async (meeting) => {
+    if (!meeting) return;
+    
+    // Confirm deletion
+    const confirmed = window.confirm(`Are you sure you want to delete the meeting on ${format(new Date(meeting.date), 'MMM dd, yyyy')}?\n\nPresenters: ${meeting.presenter1} and ${meeting.presenter2}\n\nThis action cannot be undone.`);
+    if (!confirmed) return;
+    
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/delete-meeting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: meeting.date, adminPasscode: passcode })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSchedule(data.schedule);
+        setSuccessMessage(`Meeting on ${format(new Date(meeting.date), 'MMM dd, yyyy')} deleted successfully`);
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to delete meeting');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while deleting meeting.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="login-container">
@@ -624,6 +654,16 @@ function App() {
                 >
                   <Edit3 size={16} />
                 </button>
+                {isAdmin && (
+                  <button
+                    className="action-btn"
+                    onClick={() => deleteMeeting(meeting)}
+                    title="Delete this meeting (Admin only)"
+                    style={{ color: '#ff4444' }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                )}
               </div>
             </div>
           ))}

@@ -265,8 +265,8 @@ async function checkAndUpdateSchedule() {
     const mondayAfterNextISO = mondayAfterNext.toISOString().split('T')[0];
     console.log('[Schedule Check] Checking for meeting two weeks out:', mondayAfterNextISO);
 
-    const meetingInTwoWeeks = presentationSchedule.find(m => m.date === mondayAfterNextISO)
-      || presentationSchedule.find(m => new Date(m.date) > todayYMD);
+    // Only send reminders if there's a meeting EXACTLY two weeks out (not any future meeting)
+    const meetingInTwoWeeks = presentationSchedule.find(m => m.date === mondayAfterNextISO);
 
     if (meetingInTwoWeeks) {
       console.log(`[Schedule Check] Found upcoming meeting (${meetingInTwoWeeks.date}):`, meetingInTwoWeeks);
@@ -340,21 +340,15 @@ async function checkAndUpdateSchedule() {
     console.log('[Email] SCHEDULE_REPORT_EMAIL not configured, skipping full schedule report');
   }
 
-  // Optional: extend schedule if too few unscheduled members remain (keep prior behavior)
-  const remainingPresenters = groupMembers.filter(member => {
-    const hasPresented = presentationSchedule.some(meeting => 
-      meeting.presenter1 === member.name || meeting.presenter2 === member.name
-    );
-    return !hasPresented;
-  });
-  if (remainingPresenters.length < groupMembers.length / 3 && presentationSchedule.length > 0) {
+  // Auto-extend schedule if fewer than 5 meetings remain
+  if (presentationSchedule.length < 5 && presentationSchedule.length > 0) {
     currentRound++;
     const lastMeetingDate = new Date(presentationSchedule[presentationSchedule.length - 1].date);
     lastMeetingDate.setDate(lastMeetingDate.getDate() + 14);
     const newSchedule = generateSchedule(lastMeetingDate);
     presentationSchedule = [...presentationSchedule, ...newSchedule];
     console.log('New round generated:', currentRound);
-    console.log(`[Schedule Check] Added ${newSchedule.length} new meetings to schedule`);
+    console.log(`[Schedule Check] Added ${newSchedule.length} new meetings to schedule (auto-extend triggered with <5 meetings remaining)`);
     
     // Save the updated schedule
     try {
@@ -767,6 +761,35 @@ app.post('/api/admin/assign-presenter', ensureDataLoaded, (req, res) => {
 
   saveSchedule(presentationSchedule).finally(() => {
     return res.json({ success: true, schedule: presentationSchedule });
+  });
+});
+
+// Delete a specific meeting (admin only)
+app.post('/api/admin/delete-meeting', ensureDataLoaded, (req, res) => {
+  const { date, adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  if (!date) {
+    return res.status(400).json({ success: false, message: 'date is required' });
+  }
+
+  const idx = presentationSchedule.findIndex(m => m.date === date);
+  if (idx === -1) {
+    return res.status(404).json({ success: false, message: 'Meeting date not found' });
+  }
+
+  // Remove the meeting from the schedule
+  const deletedMeeting = presentationSchedule.splice(idx, 1)[0];
+  console.log(`[Admin] Meeting deleted: ${deletedMeeting.date} (Presenters: ${deletedMeeting.presenter1}, ${deletedMeeting.presenter2})`);
+  
+  saveSchedule(presentationSchedule).finally(() => {
+    return res.json({ 
+      success: true, 
+      message: `Meeting on ${date} deleted successfully`,
+      deletedMeeting,
+      schedule: presentationSchedule 
+    });
   });
 });
 
