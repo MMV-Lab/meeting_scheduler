@@ -150,6 +150,9 @@ function App() {
 
   const handleChangeDate = async () => {
     if (!selectedMeeting || !newDate) return;
+    const applyToFollowing = window.confirm(
+      'Apply this date change to this meeting and all future meetings?\n\nSelect "OK" to also shift future meetings (they will snap back to Mondays two weeks apart).\nSelect "Cancel" to change only this meeting.'
+    );
     
     try {
       const response = await fetch('/api/change-date', {
@@ -159,7 +162,8 @@ function App() {
         },
         body: JSON.stringify({ 
           oldDate: selectedMeeting.date, 
-          newDate: newDate 
+          newDate: newDate,
+          applyToFollowing
         }),
       });
       
@@ -170,7 +174,7 @@ function App() {
         setShowDateChangeModal(false);
         setSelectedMeeting(null);
         setNewDate('');
-        setSuccessMessage('Date changed successfully!');
+        setSuccessMessage(applyToFollowing ? 'Date changed and future meetings adjusted!' : 'Date changed for this meeting.');
         setTimeout(() => setSuccessMessage(''), 3000);
       } else {
         setErrorMessage(data.message);

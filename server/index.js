@@ -136,6 +136,13 @@ function addMinutesToTimeStr(timeStr, addMinutes) {
   return `${pad2(newH)}:${pad2(newM)}`;
 }
 
+function alignDateToMonday(date) {
+  const day = date.getDay();
+  const diff = day === 0 ? 1 : 1 - day; // Sunday -> +1 day, rest shift backward to Monday
+  date.setDate(date.getDate() + diff);
+  return date;
+}
+
 function buildICSForMeeting(meeting) {
   const startLocal = formatIcsLocal(meeting.date, meeting.time || '09:00');
   const endLocal = formatIcsLocal(meeting.date, addMinutesToTimeStr(meeting.time || '09:00', 120));
@@ -583,7 +590,7 @@ app.post('/api/skip-meeting', ensureDataLoaded, (req, res) => {
 });
 
 app.post('/api/change-date', ensureDataLoaded, (req, res) => {
-  const { oldDate, newDate } = req.body;
+  const { oldDate, newDate, applyToFollowing } = req.body;
   
   const meetingIndex = presentationSchedule.findIndex(meeting => meeting.date === oldDate);
   if (meetingIndex === -1) {
@@ -593,16 +600,23 @@ app.post('/api/change-date', ensureDataLoaded, (req, res) => {
   // Update the meeting date
   presentationSchedule[meetingIndex].date = newDate;
   
-  // Adjust subsequent dates to maintain 2-week intervals
-  for (let i = meetingIndex + 1; i < presentationSchedule.length; i++) {
-    const previousDate = new Date(presentationSchedule[i - 1].date);
-    previousDate.setDate(previousDate.getDate() + 14);
-    presentationSchedule[i].date = previousDate.toISOString().split('T')[0];
+  const shouldCascade = applyToFollowing !== false;
+  if (shouldCascade) {
+    // Adjust subsequent dates to maintain 2-week intervals, aligning to Mondays
+    for (let i = meetingIndex + 1; i < presentationSchedule.length; i++) {
+      const previousDate = new Date(presentationSchedule[i - 1].date);
+      previousDate.setDate(previousDate.getDate() + 14);
+      alignDateToMonday(previousDate);
+      presentationSchedule[i].date = previousDate.toISOString().split('T')[0];
+    }
   }
   
-  console.log(`Meeting date changed: ${oldDate} -> ${newDate}. Schedule updated.`);
+  // Keep schedule sorted chronologically after the change
+  presentationSchedule.sort((a, b) => new Date(a.date) - new Date(b.date));
+  
+  console.log(`Meeting date changed: ${oldDate} -> ${newDate}. Cascade: ${shouldCascade}`);
   saveSchedule(presentationSchedule).finally(() => {
-    res.json({ success: true, schedule: presentationSchedule });
+    res.json({ success: true, applyToFollowing: shouldCascade, schedule: presentationSchedule });
   });
 });
 
