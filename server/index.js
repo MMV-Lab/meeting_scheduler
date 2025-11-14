@@ -539,49 +539,60 @@ app.post('/api/skip-meeting', ensureDataLoaded, (req, res) => {
   };
   const skippedTime = skippedMeeting.time || '09:00';
 
-  if (presentationSchedule.length === 1) {
-    const baseDate = new Date(skippedMeeting.date);
-    baseDate.setDate(baseDate.getDate() + 14);
-    presentationSchedule[0] = {
-      ...presentationSchedule[0],
-      date: baseDate.toISOString().split('T')[0],
-      time: skippedTime,
-      presenter1: skippedPresenters.presenter1,
-      presenter2: skippedPresenters.presenter2,
-      presenter1Email: skippedPresenters.presenter1Email,
-      presenter2Email: skippedPresenters.presenter2Email
-    };
-  } else {
-    for (let i = skipIndex; i < presentationSchedule.length - 1; i++) {
-      const nextMeeting = presentationSchedule[i + 1];
-      presentationSchedule[i] = {
-        ...presentationSchedule[i],
-        date: nextMeeting.date,
-        time: nextMeeting.time,
-        presenter1: nextMeeting.presenter1,
-        presenter2: nextMeeting.presenter2,
-        presenter1Email: nextMeeting.presenter1Email,
-        presenter2Email: nextMeeting.presenter2Email
-      };
-    }
+  // Remove the skipped meeting from its current position
+  presentationSchedule.splice(skipIndex, 1);
 
-    const lastIndex = presentationSchedule.length - 1;
-    const baseDateStr = presentationSchedule[lastIndex - 1]
-      ? presentationSchedule[lastIndex - 1].date
-      : skippedMeeting.date;
-    const baseDate = new Date(baseDateStr);
-    baseDate.setDate(baseDate.getDate() + 14);
+  const carryData = {
+    presenter1: skippedPresenters.presenter1,
+    presenter2: skippedPresenters.presenter2,
+    presenter1Email: skippedPresenters.presenter1Email,
+    presenter2Email: skippedPresenters.presenter2Email,
+    time: skippedTime
+  };
 
-    presentationSchedule[lastIndex] = {
-      ...presentationSchedule[lastIndex],
-      date: baseDate.toISOString().split('T')[0],
-      time: skippedTime,
-      presenter1: skippedPresenters.presenter1,
-      presenter2: skippedPresenters.presenter2,
-      presenter1Email: skippedPresenters.presenter1Email,
-      presenter2Email: skippedPresenters.presenter2Email
+  // Shift presenters down the queue so skipped presenters take the next slot
+  for (let i = skipIndex; i < presentationSchedule.length; i++) {
+    const currentMeeting = presentationSchedule[i];
+    const currentData = {
+      presenter1: currentMeeting.presenter1,
+      presenter2: currentMeeting.presenter2,
+      presenter1Email: currentMeeting.presenter1Email,
+      presenter2Email: currentMeeting.presenter2Email,
+      time: currentMeeting.time || '09:00'
     };
+
+    presentationSchedule[i] = {
+      ...currentMeeting,
+      presenter1: carryData.presenter1,
+      presenter2: carryData.presenter2,
+      presenter1Email: carryData.presenter1Email,
+      presenter2Email: carryData.presenter2Email,
+      time: carryData.time
+    };
+
+    carryData.presenter1 = currentData.presenter1;
+    carryData.presenter2 = currentData.presenter2;
+    carryData.presenter1Email = currentData.presenter1Email;
+    carryData.presenter2Email = currentData.presenter2Email;
+    carryData.time = currentData.time;
   }
+
+  // Append a new meeting at the end with the final carry-over presenters
+  const lastDateSource = presentationSchedule.length > 0
+    ? presentationSchedule[presentationSchedule.length - 1].date
+    : skippedMeeting.date;
+  const newDate = new Date(lastDateSource);
+  newDate.setDate(newDate.getDate() + 14);
+  alignDateToMonday(newDate);
+
+  presentationSchedule.push({
+    date: newDate.toISOString().split('T')[0],
+    time: carryData.time || '09:00',
+    presenter1: carryData.presenter1,
+    presenter2: carryData.presenter2,
+    presenter1Email: carryData.presenter1Email,
+    presenter2Email: carryData.presenter2Email
+  });
 
   console.log(`Meeting skipped: ${date}. Date removed and presenters shifted. Schedule has ${presentationSchedule.length} meetings.`);
   saveSchedule(presentationSchedule).finally(() => {
