@@ -1247,7 +1247,7 @@ app.post('/api/admin/send-admin-reminder', ensureDataLoaded, (req, res) => {
   const ics = buildICSForMeeting(upcoming);
   const icsBase64 = Buffer.from(ics).toString('base64');
   sgMail.send({
-    to: 'jianxu.chen@isas.de',
+    to: 'jianxuchen.ai@gmail.com',
     from: SENDGRID_FROM_EMAIL,
     subject: 'Biospec Group Meeting Reminder',
     text,
