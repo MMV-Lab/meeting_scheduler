@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
-const cron = require('node-cron');
+const sgMail = require('@sendgrid/mail');
 const path = require('path');
 require('dotenv').config();
 
@@ -14,7 +13,36 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, '../build')));
 
 // Persistence helpers (KV or local JSON for dev)
-const { loadMembers, saveMembers, loadSchedule, saveSchedule } = require('./persistence');
+const { loadMembers, saveMembers, loadSchedule, saveSchedule, isKVConfigured } = require('./persistence');
+
+// ---- Idempotency helpers (prevent duplicate cron emails on retries) ----
+// Uses a weekly key in KV (e.g. "cron-lock:2026-W10") that expires after 6 days.
+// If the key already exists when the cron fires, we skip email sending.
+function getCronLockKey() {
+  const now = new Date();
+  // ISO week number
+  const jan1 = new Date(now.getFullYear(), 0, 1);
+  const days = Math.floor((now - jan1) / 86400000);
+  const week = Math.ceil((days + jan1.getDay() + 1) / 7);
+  return `cron-lock:${now.getFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+async function acquireCronLock() {
+  if (!isKVConfigured()) {
+    // In local dev without KV, always allow
+    return true;
+  }
+  const { kvGet, kvSetEx } = require('./persistence');
+  const key = getCronLockKey();
+  const existing = await kvGet(key);
+  if (existing) {
+    console.log(`[Cron Idempotency] Lock ${key} already exists — skipping duplicate run`);
+    return false; // Already ran this week
+  }
+  await kvSetEx(key, { ran: new Date().toISOString() }, 518400); // TTL = 6 days in seconds
+  console.log(`[Cron Idempotency] Acquired lock ${key}`);
+  return true;
+}
 
 // Global variables (from env)
 const PASSCODE = process.env.USER_PASSCODE || process.env.PASSCODE;
@@ -40,26 +68,20 @@ let groupMembers = [
 let presentationSchedule = [];
 let currentRound = 1;
 
-// Email transporter (configure with your SMTP service)
-const smtpHost = process.env.SMTP_HOST || 'smtp.gmail.com';
-const smtpPort = parseInt(process.env.SMTP_PORT || '465', 10);
-const smtpSecure = process.env.SMTP_SECURE ? process.env.SMTP_SECURE === 'true' : smtpPort === 465;
-const smtpUser = process.env.EMAIL_USER;
-const smtpPass = process.env.EMAIL_PASS;
+// Email configuration (SendGrid)
+const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_USER;
 
-if (!smtpUser || !smtpPass) {
-  console.warn('[Email] EMAIL_USER/EMAIL_PASS not configured. Email sending will fail until configured.');
+if (!SENDGRID_API_KEY) {
+  console.warn('[Email] SENDGRID_API_KEY not configured. Email sending will fail until configured.');
+}
+if (!SENDGRID_FROM_EMAIL) {
+  console.warn('[Email] SENDGRID_FROM_EMAIL not configured. Email sending will fail until configured.');
 }
 
-const transporter = nodemailer.createTransport({
-  host: smtpHost,
-  port: smtpPort,
-  secure: smtpSecure,
-  auth: {
-    user: smtpUser,
-    pass: smtpPass
-  }
-});
+if (SENDGRID_API_KEY) {
+  sgMail.setApiKey(SENDGRID_API_KEY);
+}
 
 // Helper functions
 function generateSchedule(startDate = new Date('2025-09-08')) {
@@ -88,18 +110,18 @@ function getMemberByName(name) {
 }
 
 async function sendEmail(to, subject, text) {
-  if (!smtpUser || !smtpPass) {
-    throw new Error('EMAIL_USER/EMAIL_PASS not configured');
+  if (!SENDGRID_API_KEY || !SENDGRID_FROM_EMAIL) {
+    throw new Error('SENDGRID_API_KEY/SENDGRID_FROM_EMAIL not configured');
   }
-  const mailOptions = {
-    from: smtpUser,
+  const msg = {
     to: to,
+    from: SENDGRID_FROM_EMAIL,
     subject: subject,
     text: text
   };
-  const info = await transporter.sendMail(mailOptions);
-  console.log('Email sent:', info.response);
-  return info;
+  const [response] = await sgMail.send(msg);
+  console.log('Email sent via SendGrid:', response.statusCode);
+  return response;
 }
 
 function composeFullScheduleEmailText() {
@@ -187,7 +209,7 @@ function buildICSForMeeting(meeting) {
     `DTEND;TZID=Europe/Berlin:${endLocal}`,
     `SUMMARY:${summary}`,
     `DESCRIPTION:${description}`,
-    `ORGANIZER;CN=Biospec Group:mailto:${smtpUser || 'noreply@example.com'}`,
+    `ORGANIZER;CN=Biospec Group:mailto:${SENDGRID_FROM_EMAIL || 'noreply@example.com'}`,
     'LOCATION:Zoom',
     'STATUS:CONFIRMED',
     'TRANSP:OPAQUE',
@@ -199,6 +221,13 @@ function buildICSForMeeting(meeting) {
 
 async function checkAndUpdateSchedule() {
   console.log('[Schedule Check] Starting reminder check...');
+
+  // Idempotency: prevent duplicate email sends if Vercel retries the cron
+  const lockAcquired = await acquireCronLock();
+  if (!lockAcquired) {
+    console.log('[Schedule Check] Duplicate cron run detected — skipping email sends but still doing schedule maintenance');
+  }
+
   const today = new Date();
   const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   console.log('[Schedule Check] Today:', todayYMD.toISOString().split('T')[0]);
@@ -224,114 +253,127 @@ async function checkAndUpdateSchedule() {
   console.log('[Schedule Check] Next Monday:', nextMondayISO);
   const meetingNextWeek = presentationSchedule.find(m => m.date === nextMondayISO);
 
-  if (meetingNextWeek) {
-    // Case (2): Meeting next week -> remind everyone
-    console.log(`[Schedule Check] Found meeting next Monday (${nextMondayISO}):`, meetingNextWeek);
-    console.log(`[Email] Sending meeting reminder to all ${groupMembers.length} members...`);
-    
-    const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
-    
-    const reminderHtml = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
-        <p><strong>Date:</strong> ${meetingNextWeek.date}</p>
-        <p><strong>Time:</strong> ${meetingNextWeek.time}</p>
-        <p><strong>Presenters:</strong> ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}</p>
-        <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
-        <p style="margin-top: 20px;">Please join us for the group meeting!</p>
-      </div>
-    `;
-    
-    const ics = buildICSForMeeting(meetingNextWeek);
-    const results = await Promise.allSettled(groupMembers.map(member => transporter.sendMail({
-      from: smtpUser,
-      to: member.email,
-      subject: 'Biospec Group Meeting Reminder',
-      text: reminderText,
-      html: reminderHtml,
-      icalEvent: {
-        method: 'REQUEST',
-        content: ics
-      }
-    })));
-    
-    const failures = results.filter(r => r.status === 'rejected').length;
-    const successes = results.filter(r => r.status === 'fulfilled').length;
-    console.log(`[Email] Meeting reminders sent: ${successes} successful, ${failures} failed`);
-    if (failures > 0) {
-      console.warn(`[Email] ${failures} reminder(s) failed`);
-      results.filter(r => r.status === 'rejected').forEach((r, i) => {
-        console.warn(`[Email] Failed to send to ${groupMembers[i]?.email}:`, r.reason?.message || r.reason);
-      });
-    }
-  } else {
-    // Case (1): No meeting next week -> remind presenters for two weeks from now
-    console.log(`[Schedule Check] No meeting on next Monday (${nextMondayISO})`);
-    const mondayAfterNext = new Date(nextMonday);
-    mondayAfterNext.setDate(mondayAfterNext.getDate() + 7);
-    const mondayAfterNextISO = mondayAfterNext.toISOString().split('T')[0];
-    console.log('[Schedule Check] Checking for meeting two weeks out:', mondayAfterNextISO);
-
-    // Only send reminders if there's a meeting EXACTLY two weeks out (not any future meeting)
-    const meetingInTwoWeeks = presentationSchedule.find(m => m.date === mondayAfterNextISO);
-
-    if (meetingInTwoWeeks) {
-      console.log(`[Schedule Check] Found upcoming meeting (${meetingInTwoWeeks.date}):`, meetingInTwoWeeks);
-      console.log('[Email] Sending presenter reminders...');
+  // Only send emails if we acquired the idempotency lock
+  if (lockAcquired) {
+    if (meetingNextWeek) {
+      // Case (2): Meeting next week -> remind everyone via batch API
+      console.log(`[Schedule Check] Found meeting next Monday (${nextMondayISO}):`, meetingNextWeek);
+      console.log(`[Email] Sending meeting reminder to all ${groupMembers.length} members (batch)...`);
       
-      const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK || 'Not configured'}`;
+      const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
       
       const reminderHtml = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #e74c3c;">Presenter Reminder</h2>
-          <p>You are scheduled to present on <strong>${meetingInTwoWeeks.date}</strong> at <strong>${meetingInTwoWeeks.time}</strong>.</p>
-          <p>Please prepare your talk.</p>
-          <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none; font-size: 16px;">${ZOOM_LINK || 'Not configured'}</a></p>
+          <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
+          <p><strong>Date:</strong> ${meetingNextWeek.date}</p>
+          <p><strong>Time:</strong> ${meetingNextWeek.time}</p>
+          <p><strong>Presenters:</strong> ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}</p>
+          <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
+          <p style="margin-top: 20px;">Please join us for the group meeting!</p>
         </div>
       `;
       
-      const ics = buildICSForMeeting(meetingInTwoWeeks);
-      const tasks = [];
-      if (meetingInTwoWeeks.presenter1Email) {
-        console.log(`[Email] Sending reminder to presenter 1: ${meetingInTwoWeeks.presenter1Email}`);
-        tasks.push(transporter.sendMail({
-          from: smtpUser,
-          to: meetingInTwoWeeks.presenter1Email,
-          subject: 'Presenter Reminder',
-          text: reminderText,
-          html: reminderHtml,
-          icalEvent: { method: 'REQUEST', content: ics }
-        }));
-      }
-      if (meetingInTwoWeeks.presenter2Email) {
-        console.log(`[Email] Sending reminder to presenter 2: ${meetingInTwoWeeks.presenter2Email}`);
-        tasks.push(transporter.sendMail({
-          from: smtpUser,
-          to: meetingInTwoWeeks.presenter2Email,
-          subject: 'Presenter Reminder',
-          text: reminderText,
-          html: reminderHtml,
-          icalEvent: { method: 'REQUEST', content: ics }
-        }));
-      }
-      if (tasks.length > 0) {
-        const results = await Promise.allSettled(tasks);
-        const failures = results.filter(r => r.status === 'rejected').length;
-        const successes = results.filter(r => r.status === 'fulfilled').length;
-        console.log(`[Email] Presenter reminders sent: ${successes} successful, ${failures} failed`);
-        if (failures > 0) {
-          console.warn(`[Email] ${failures} presenter reminder(s) failed`);
-          results.filter(r => r.status === 'rejected').forEach(r => {
-            console.warn(`[Email] Failed:`, r.reason?.message || r.reason);
-          });
-        }
-      } else {
-        console.log('[Email] No presenter emails found for upcoming meeting');
+      const ics = buildICSForMeeting(meetingNextWeek);
+      const icsBase64 = Buffer.from(ics).toString('base64');
+
+      // Build personalized messages array for sendMultiple (single API call)
+      const messages = groupMembers.map(member => ({
+        to: member.email,
+        from: SENDGRID_FROM_EMAIL,
+        subject: 'Biospec Group Meeting Reminder',
+        text: reminderText,
+        html: reminderHtml,
+        attachments: [{
+          content: icsBase64,
+          filename: 'meeting.ics',
+          type: 'text/calendar; method=REQUEST',
+          disposition: 'attachment'
+        }]
+      }));
+
+      try {
+        await sgMail.send(messages);
+        console.log(`[Email] Meeting reminders batch sent to ${messages.length} members`);
+      } catch (err) {
+        console.error(`[Email] Batch send failed:`, err.message);
+        if (err.response) console.error('[Email] SendGrid response:', err.response.body);
       }
     } else {
-      console.log('[Schedule Check] No upcoming meetings found');
+      // Case (1): No meeting next week -> remind presenters for two weeks from now
+      console.log(`[Schedule Check] No meeting on next Monday (${nextMondayISO})`);
+      const mondayAfterNext = new Date(nextMonday);
+      mondayAfterNext.setDate(mondayAfterNext.getDate() + 7);
+      const mondayAfterNextISO = mondayAfterNext.toISOString().split('T')[0];
+      console.log('[Schedule Check] Checking for meeting two weeks out:', mondayAfterNextISO);
+
+      const meetingInTwoWeeks = presentationSchedule.find(m => m.date === mondayAfterNextISO);
+
+      if (meetingInTwoWeeks) {
+        console.log(`[Schedule Check] Found upcoming meeting (${meetingInTwoWeeks.date}):`, meetingInTwoWeeks);
+        console.log('[Email] Sending presenter reminders (batch)...');
+        
+        const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK || 'Not configured'}`;
+        
+        const reminderHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #e74c3c;">Presenter Reminder</h2>
+            <p>You are scheduled to present on <strong>${meetingInTwoWeeks.date}</strong> at <strong>${meetingInTwoWeeks.time}</strong>.</p>
+            <p>Please prepare your talk.</p>
+            <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none; font-size: 16px;">${ZOOM_LINK || 'Not configured'}</a></p>
+          </div>
+        `;
+        
+        const ics = buildICSForMeeting(meetingInTwoWeeks);
+        const icsBase64 = Buffer.from(ics).toString('base64');
+        const presenterMessages = [];
+        if (meetingInTwoWeeks.presenter1Email) {
+          console.log(`[Email] Including presenter 1: ${meetingInTwoWeeks.presenter1Email}`);
+          presenterMessages.push({
+            to: meetingInTwoWeeks.presenter1Email,
+            from: SENDGRID_FROM_EMAIL,
+            subject: 'Presenter Reminder',
+            text: reminderText,
+            html: reminderHtml,
+            attachments: [{
+              content: icsBase64,
+              filename: 'meeting.ics',
+              type: 'text/calendar; method=REQUEST',
+              disposition: 'attachment'
+            }]
+          });
+        }
+        if (meetingInTwoWeeks.presenter2Email) {
+          console.log(`[Email] Including presenter 2: ${meetingInTwoWeeks.presenter2Email}`);
+          presenterMessages.push({
+            to: meetingInTwoWeeks.presenter2Email,
+            from: SENDGRID_FROM_EMAIL,
+            subject: 'Presenter Reminder',
+            text: reminderText,
+            html: reminderHtml,
+            attachments: [{
+              content: icsBase64,
+              filename: 'meeting.ics',
+              type: 'text/calendar; method=REQUEST',
+              disposition: 'attachment'
+            }]
+          });
+        }
+        if (presenterMessages.length > 0) {
+          try {
+            await sgMail.send(presenterMessages);
+            console.log(`[Email] Presenter reminders batch sent to ${presenterMessages.length} presenters`);
+          } catch (err) {
+            console.error(`[Email] Presenter batch send failed:`, err.message);
+            if (err.response) console.error('[Email] SendGrid response:', err.response.body);
+          }
+        } else {
+          console.log('[Email] No presenter emails found for upcoming meeting');
+        }
+      } else {
+        console.log('[Schedule Check] No upcoming meetings found');
+      }
     }
-  }
+  } // end lockAcquired
 
   // Send weekly full schedule report to designated email
   if (SCHEDULE_REPORT_EMAIL) {
@@ -433,14 +475,8 @@ const ensureDataLoaded = async (req, res, next) => {
   }
 };
 
-// Cron job to run every Friday at 9 AM
-// Note: In production, you might want to use a more reliable scheduling service
-cron.schedule('0 8 * * 5', async () => {
-  await initializationPromise; // Ensure data is loaded before running cron job
-  await checkAndUpdateSchedule();
-}, {
-  timezone: "Europe/Berlin"
-});
+// NOTE: node-cron removed — Vercel Cron (vercel.json) handles scheduling in production.
+// The /api/admin/run-reminder-check endpoint is the sole trigger for checkAndUpdateSchedule.
 
 // API Routes
 app.post('/api/login', (req, res) => {
@@ -477,7 +513,7 @@ app.get('/api/schedule', ensureDataLoaded, async (req, res) => {
   res.json(upcoming);
 });
 
-app.post('/api/swap-presenters', ensureDataLoaded, (req, res) => {
+app.post('/api/swap-presenters', ensureDataLoaded, async (req, res) => {
   const { date1, presenter1, date2, presenter2 } = req.body;
 
   if (!date1 || !date2 || !presenter1 || !presenter2) {
@@ -516,12 +552,15 @@ app.post('/api/swap-presenters', ensureDataLoaded, (req, res) => {
   meeting2[slot2] = tmpName;
   meeting2[`${slot2}Email`] = tmpEmail;
 
-  saveSchedule(presentationSchedule).finally(() => {
-    res.json({ success: true, schedule: presentationSchedule });
-  });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist schedule after swap:', e.message);
+  }
+  res.json({ success: true, schedule: presentationSchedule });
 });
 
-app.post('/api/skip-meeting', ensureDataLoaded, (req, res) => {
+app.post('/api/skip-meeting', ensureDataLoaded, async (req, res) => {
   const { date } = req.body;
 
   const skipIndex = presentationSchedule.findIndex((meeting) => meeting.date === date);
@@ -595,12 +634,15 @@ app.post('/api/skip-meeting', ensureDataLoaded, (req, res) => {
   });
 
   console.log(`Meeting skipped: ${date}. Date removed and presenters shifted. Schedule has ${presentationSchedule.length} meetings.`);
-  saveSchedule(presentationSchedule).finally(() => {
-    res.json({ success: true, schedule: presentationSchedule });
-  });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist schedule after skip:', e.message);
+  }
+  res.json({ success: true, schedule: presentationSchedule });
 });
 
-app.post('/api/change-date', ensureDataLoaded, (req, res) => {
+app.post('/api/change-date', ensureDataLoaded, async (req, res) => {
   const { oldDate, newDate, applyToFollowing } = req.body;
   
   const meetingIndex = presentationSchedule.findIndex(meeting => meeting.date === oldDate);
@@ -626,12 +668,15 @@ app.post('/api/change-date', ensureDataLoaded, (req, res) => {
   presentationSchedule.sort((a, b) => new Date(a.date) - new Date(b.date));
   
   console.log(`Meeting date changed: ${oldDate} -> ${newDate}. Cascade: ${shouldCascade}`);
-  saveSchedule(presentationSchedule).finally(() => {
-    res.json({ success: true, applyToFollowing: shouldCascade, schedule: presentationSchedule });
-  });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist schedule after date change:', e.message);
+  }
+  res.json({ success: true, applyToFollowing: shouldCascade, schedule: presentationSchedule });
 });
 
-app.post('/api/change-time', ensureDataLoaded, (req, res) => {
+app.post('/api/change-time', ensureDataLoaded, async (req, res) => {
   const { date, newTime, adminPasscode } = req.body;
   
   // Verify admin access
@@ -654,9 +699,12 @@ app.post('/api/change-time', ensureDataLoaded, (req, res) => {
   presentationSchedule[meetingIndex].time = newTime;
   
   console.log(`Meeting time changed: ${date} -> ${newTime}.`);
-  saveSchedule(presentationSchedule).finally(() => {
-    res.json({ success: true, schedule: presentationSchedule });
-  });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist schedule after time change:', e.message);
+  }
+  res.json({ success: true, schedule: presentationSchedule });
 });
 
 app.get('/api/members', ensureDataLoaded, async (req, res) => {
@@ -667,7 +715,7 @@ app.get('/api/members', ensureDataLoaded, async (req, res) => {
 });
 
 // Admin endpoints for managing members and regenerating schedule
-app.post('/api/admin/add-member', ensureDataLoaded, (req, res) => {
+app.post('/api/admin/add-member', ensureDataLoaded, async (req, res) => {
   const { member, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -680,12 +728,15 @@ app.post('/api/admin/add-member', ensureDataLoaded, (req, res) => {
     return res.status(400).json({ success: false, message: 'Member with same name or email already exists' });
   }
   groupMembers.push({ name: member.name, email: member.email });
-  saveMembers(groupMembers).finally(() => {
-    return res.json({ success: true, members: groupMembers });
-  });
+  try {
+    await saveMembers(groupMembers);
+  } catch (e) {
+    console.error('[Save] Failed to persist members after add:', e.message);
+  }
+  return res.json({ success: true, members: groupMembers });
 });
 
-app.post('/api/admin/remove-member', ensureDataLoaded, (req, res) => {
+app.post('/api/admin/remove-member', ensureDataLoaded, async (req, res) => {
   const { name, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -716,13 +767,16 @@ app.post('/api/admin/remove-member', ensureDataLoaded, (req, res) => {
     }
     return updated;
   });
-  Promise.allSettled([saveMembers(groupMembers), saveSchedule(presentationSchedule)]).finally(() => {
-    return res.json({ success: true, members: groupMembers, schedule: presentationSchedule });
-  });
+  try {
+    await Promise.all([saveMembers(groupMembers), saveSchedule(presentationSchedule)]);
+  } catch (e) {
+    console.error('[Save] Failed to persist after member removal:', e.message);
+  }
+  return res.json({ success: true, members: groupMembers, schedule: presentationSchedule });
 });
 
 // Remove a single presenter from a specific meeting (admin only)
-app.post('/api/admin/remove-presenter', ensureDataLoaded, (req, res) => {
+app.post('/api/admin/remove-presenter', ensureDataLoaded, async (req, res) => {
   const { date, slot, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -748,13 +802,16 @@ app.post('/api/admin/remove-presenter', ensureDataLoaded, (req, res) => {
   presentationSchedule[idx][slot] = null;
   presentationSchedule[idx][`${slot}Email`] = null;
 
-  saveSchedule(presentationSchedule).finally(() => {
-    return res.json({ success: true, schedule: presentationSchedule });
-  });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist after presenter removal:', e.message);
+  }
+  return res.json({ success: true, schedule: presentationSchedule });
 });
 
 // Assign a specific member to a presenter slot on a specific date (admin only)
-app.post('/api/admin/assign-presenter', ensureDataLoaded, (req, res) => {
+app.post('/api/admin/assign-presenter', ensureDataLoaded, async (req, res) => {
   const { date, slot, memberName, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -784,13 +841,16 @@ app.post('/api/admin/assign-presenter', ensureDataLoaded, (req, res) => {
   presentationSchedule[idx][slot] = member.name;
   presentationSchedule[idx][`${slot}Email`] = member.email;
 
-  saveSchedule(presentationSchedule).finally(() => {
-    return res.json({ success: true, schedule: presentationSchedule });
-  });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist after presenter assignment:', e.message);
+  }
+  return res.json({ success: true, schedule: presentationSchedule });
 });
 
 // Delete a specific meeting (admin only)
-app.post('/api/admin/delete-meeting', ensureDataLoaded, (req, res) => {
+app.post('/api/admin/delete-meeting', ensureDataLoaded, async (req, res) => {
   const { date, adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -808,17 +868,20 @@ app.post('/api/admin/delete-meeting', ensureDataLoaded, (req, res) => {
   const deletedMeeting = presentationSchedule.splice(idx, 1)[0];
   console.log(`[Admin] Meeting deleted: ${deletedMeeting.date} (Presenters: ${deletedMeeting.presenter1}, ${deletedMeeting.presenter2})`);
   
-  saveSchedule(presentationSchedule).finally(() => {
-    return res.json({ 
-      success: true, 
-      message: `Meeting on ${date} deleted successfully`,
-      deletedMeeting,
-      schedule: presentationSchedule 
-    });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist after meeting deletion:', e.message);
+  }
+  return res.json({ 
+    success: true, 
+    message: `Meeting on ${date} deleted successfully`,
+    deletedMeeting,
+    schedule: presentationSchedule 
   });
 });
 
-app.post('/api/admin/refill-schedule', ensureDataLoaded, (req, res) => {
+app.post('/api/admin/refill-schedule', ensureDataLoaded, async (req, res) => {
   const { adminPasscode } = req.body;
   if (adminPasscode !== ADMIN_PASSCODE) {
     return res.status(403).json({ success: false, message: 'Admin access required' });
@@ -885,11 +948,14 @@ app.post('/api/admin/refill-schedule', ensureDataLoaded, (req, res) => {
     }
   }
 
-  saveSchedule(presentationSchedule).finally(() => {
-    return res.json({ success: true, schedule: presentationSchedule });
-  });
+  try {
+    await saveSchedule(presentationSchedule);
+  } catch (e) {
+    console.error('[Save] Failed to persist after schedule refill:', e.message);
+  }
+  return res.json({ success: true, schedule: presentationSchedule });
 });
-app.post('/api/admin/update-members', ensureDataLoaded, (req, res) => {
+app.post('/api/admin/update-members', ensureDataLoaded, async (req, res) => {
   const { members, adminPasscode } = req.body;
   
   // Verify admin access
@@ -921,13 +987,16 @@ app.post('/api/admin/update-members', ensureDataLoaded, (req, res) => {
   
   console.log(`Members updated: ${groupMembers.length} members. New schedule generated with ${presentationSchedule.length} meetings.`);
   
-  Promise.allSettled([saveMembers(groupMembers), saveSchedule(presentationSchedule)]).finally(() => {
-    res.json({ 
-      success: true, 
-      message: 'Members updated and schedule regenerated',
-      members: groupMembers,
-      schedule: presentationSchedule
-    });
+  try {
+    await Promise.all([saveMembers(groupMembers), saveSchedule(presentationSchedule)]);
+  } catch (e) {
+    console.error('[Save] Failed to persist after member update:', e.message);
+  }
+  res.json({ 
+    success: true, 
+    message: 'Members updated and schedule regenerated',
+    members: groupMembers,
+    schedule: presentationSchedule
   });
 });
 
@@ -946,12 +1015,15 @@ app.post('/api/admin/regenerate-schedule', ensureDataLoaded, async (req, res) =>
     
     console.log(`Schedule regenerated starting from ${start.toISOString().split('T')[0]}. ${presentationSchedule.length} meetings created.`);
     
-    saveSchedule(presentationSchedule).finally(() => {
-      res.json({ 
-        success: true, 
-        message: 'Schedule regenerated successfully',
-        schedule: presentationSchedule
-      });
+    try {
+      await saveSchedule(presentationSchedule);
+    } catch (e) {
+      console.error('[Save] Failed to persist after schedule regeneration:', e.message);
+    }
+    res.json({ 
+      success: true, 
+      message: 'Schedule regenerated successfully',
+      schedule: presentationSchedule
     });
   } catch (error) {
     res.status(400).json({ 
@@ -1072,22 +1144,33 @@ app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
     </div>
   `;
   const ics = buildICSForMeeting(upcoming);
+  const icsBase64 = Buffer.from(ics).toString('base64');
   const tasks = [];
-  if (upcoming.presenter1Email) tasks.push(transporter.sendMail({
-    from: smtpUser,
+  if (upcoming.presenter1Email) tasks.push(sgMail.send({
     to: upcoming.presenter1Email,
+    from: SENDGRID_FROM_EMAIL,
     subject: 'Presenter Reminder',
     text,
     html,
-    icalEvent: { method: 'REQUEST', content: ics }
+    attachments: [{
+      content: icsBase64,
+      filename: 'meeting.ics',
+      type: 'text/calendar; method=REQUEST',
+      disposition: 'attachment'
+    }]
   }));
-  if (upcoming.presenter2Email) tasks.push(transporter.sendMail({
-    from: smtpUser,
+  if (upcoming.presenter2Email) tasks.push(sgMail.send({
     to: upcoming.presenter2Email,
+    from: SENDGRID_FROM_EMAIL,
     subject: 'Presenter Reminder',
     text,
     html,
-    icalEvent: { method: 'REQUEST', content: ics }
+    attachments: [{
+      content: icsBase64,
+      filename: 'meeting.ics',
+      type: 'text/calendar; method=REQUEST',
+      disposition: 'attachment'
+    }]
   }));
   Promise.allSettled(tasks).then(results => {
     const failures = results.filter(r => r.status === 'rejected');
@@ -1118,19 +1201,69 @@ app.post('/api/admin/send-everyone-reminder', ensureDataLoaded, (req, res) => {
     </div>
   `;
   const ics = buildICSForMeeting(upcoming);
-  Promise.allSettled(groupMembers.map(member => transporter.sendMail({
-    from: smtpUser,
+  const icsBase64 = Buffer.from(ics).toString('base64');
+  Promise.allSettled(groupMembers.map(member => sgMail.send({
     to: member.email,
+    from: SENDGRID_FROM_EMAIL,
     subject: 'Biospec Group Meeting Reminder',
     text,
     html,
-    icalEvent: { method: 'REQUEST', content: ics }
+    attachments: [{
+      content: icsBase64,
+      filename: 'meeting.ics',
+      type: 'text/calendar; method=REQUEST',
+      disposition: 'attachment'
+    }]
   })))
     .then(results => {
       const failures = results.filter(r => r.status === 'rejected');
       return res.json({ success: failures.length === 0, failures: failures.length });
     })
     .catch(() => res.json({ success: false }));
+});
+
+app.post('/api/admin/send-admin-reminder', ensureDataLoaded, (req, res) => {
+  const { adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const upcoming = presentationSchedule.find(m => new Date(m.date) >= todayYMD);
+  if (!upcoming) {
+    return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
+  }
+  const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
+      <p><strong>Date:</strong> ${upcoming.date}</p>
+      <p><strong>Time:</strong> ${upcoming.time}</p>
+      <p><strong>Presenters:</strong> ${upcoming.presenter1} and ${upcoming.presenter2}</p>
+      <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
+      <p style="margin-top: 20px;">Please join us for the group meeting!</p>
+    </div>
+  `;
+  const ics = buildICSForMeeting(upcoming);
+  const icsBase64 = Buffer.from(ics).toString('base64');
+  sgMail.send({
+    to: 'jianxu.chen@isas.de',
+    from: SENDGRID_FROM_EMAIL,
+    subject: 'Biospec Group Meeting Reminder',
+    text,
+    html,
+    attachments: [{
+      content: icsBase64,
+      filename: 'meeting.ics',
+      type: 'text/calendar; method=REQUEST',
+      disposition: 'attachment'
+    }]
+  })
+    .then(() => res.json({ success: true }))
+    .catch(err => {
+      console.error('Failed to send admin reminder:', err);
+      res.json({ success: false, message: 'Failed to send reminder' });
+    });
 });
 
 // Serve React app

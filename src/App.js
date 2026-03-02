@@ -367,6 +367,28 @@ function App() {
     }
   };
 
+  const sendAdminReminder = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/send-admin-reminder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminPasscode: passcode })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setSuccessMessage('Admin reminder sent to Jianxu Chen');
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to send admin reminder');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while sending admin reminder.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const exportMembers = async () => {
     try {
       const response = await fetch(`/api/admin/export-members?adminPasscode=${encodeURIComponent(passcode)}`);
@@ -1010,7 +1032,8 @@ function App() {
               <h4>🔄 Maintenance</h4>
               <button className="btn btn-secondary" onClick={refillSchedule} style={{ marginRight: '1rem' }}>Refill Schedule</button>
               <button className="btn" onClick={sendPresenterReminder} style={{ marginRight: '0.5rem' }}>Send Presenter Reminder</button>
-              <button className="btn" onClick={sendEveryoneReminder}>Send Everyone Reminder</button>
+              <button className="btn" onClick={sendEveryoneReminder} style={{ marginRight: '0.5rem' }}>Send Everyone Reminder</button>
+              <button className="btn" onClick={sendAdminReminder}>Send Admin Reminder</button>
             </div>
 
             {errorMessage && <div className="error-message">{errorMessage}</div>}

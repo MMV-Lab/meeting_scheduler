@@ -16,6 +16,9 @@ env.example
 dist/
 build/
 
+# Local data (fallback when KV not configured)
+server/data/
+
 # Runtime data
 pids
 *.pid

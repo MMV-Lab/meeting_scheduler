@@ -85,6 +85,39 @@ async function kvSet(key, value, retries = 2) {
   return false;
 }
 
+async function kvSetEx(key, value, ttlSeconds, retries = 2) {
+  const { url, token } = getKVBase();
+  const val = encodeURIComponent(JSON.stringify(value));
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      // Upstash Redis REST: SET key value EX ttl
+      const resp = await fetch(`${url}/set/${encodeURIComponent(key)}/${val}/EX/${ttlSeconds}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (resp.ok) return true;
+      
+      if (attempt < retries) {
+        console.log(`[KV] SetEx failed for ${key}, attempt ${attempt + 1}/${retries + 1}, retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      return false;
+    } catch (error) {
+      if (attempt < retries) {
+        console.log(`[KV] Error setting ${key} with TTL (${error.message}), attempt ${attempt + 1}/${retries + 1}, retrying...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      console.error(`[KV] Failed to setEx ${key} after ${retries + 1} attempts:`, error.message);
+      throw error;
+    }
+  }
+  return false;
+}
+
 async function loadMembers() {
   if (isKVConfigured()) {
     return await kvGet('members');
@@ -130,7 +163,9 @@ module.exports = {
   saveMembers,
   loadSchedule,
   saveSchedule,
-  isKVConfigured
+  isKVConfigured,
+  kvGet,
+  kvSetEx
 };
 
 
