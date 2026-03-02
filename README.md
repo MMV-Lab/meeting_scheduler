@@ -26,7 +26,7 @@ A modern, beautiful web application for organizing and managing group meeting pr
 
 - **Frontend**: React 18, TypeScript, CSS3 with modern animations
 - **Backend**: Node.js, Express.js
-- **Email**: Nodemailer with Gmail integration
+- **Email**: Email service with SendGrid
 - **Scheduling**: Node-cron for automated tasks
 - **Styling**: Custom CSS with glassmorphism effects and gradients
 
