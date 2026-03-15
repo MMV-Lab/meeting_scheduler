@@ -47,7 +47,7 @@ async function acquireCronLock() {
 // Global variables (from env)
 const PASSCODE = process.env.USER_PASSCODE || process.env.PASSCODE;
 const ADMIN_PASSCODE = process.env.ADMIN_PASSCODE;
-const ZOOM_LINK = process.env.GROUP_ZOOM_LINK;
+const ZOOM_LINK = (process.env.GROUP_ZOOM_LINK || '').trim();
 const SCHEDULE_REPORT_EMAIL = process.env.SCHEDULE_REPORT_EMAIL;
 
 // Sample group members (you can replace with actual members)
@@ -140,8 +140,83 @@ function composeFullScheduleEmailText() {
   return lines.join('\n');
 }
 
+function getMeetingTime(meeting) {
+  return meeting.time || '09:00';
+}
+
+function formatPresenterNames(meeting) {
+  const presenters = [meeting.presenter1, meeting.presenter2].filter(Boolean);
+  return presenters.length > 0 ? presenters.join(' and ') : 'TBD';
+}
+
+function getZoomLinkText() {
+  return ZOOM_LINK || 'Not configured';
+}
+
+function getZoomLinkHtml() {
+  if (!ZOOM_LINK) {
+    return 'Not configured';
+  }
+
+  return `<a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK}</a>`;
+}
+
+function buildMeetingReminderContent(meeting) {
+  const presenters = formatPresenterNames(meeting);
+  const time = getMeetingTime(meeting);
+  const zoomLinkText = getZoomLinkText();
+
+  return {
+    subject: 'Biospec Group Meeting Reminder',
+    text: `Biospec Group Meeting Reminder\n\nThis is a reminder for the upcoming Biospec Group meeting.\n\nDate: ${meeting.date}\nTime: ${time}\nPresenters: ${presenters}\nZoom Link: ${zoomLinkText}\n\nPlease keep the attached calendar invite on your calendar. The invite includes the meeting time and the same Zoom link for joining.\n\nBest,\nBiospec Group Meeting Scheduler`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1f2933; line-height: 1.6;">
+        <h2 style="color: #2c3e50; margin-bottom: 12px;">Biospec Group Meeting Reminder</h2>
+        <p style="margin-top: 0;">This is a reminder for the upcoming Biospec Group meeting.</p>
+        <p><strong>Date:</strong> ${meeting.date}</p>
+        <p><strong>Time:</strong> ${time}</p>
+        <p><strong>Presenters:</strong> ${presenters}</p>
+        <p><strong>Zoom Link:</strong> ${getZoomLinkHtml()}</p>
+        <p>Please keep the attached calendar invite on your calendar. The invite includes the meeting time and the same Zoom link for joining.</p>
+        <p style="margin-top: 24px;">Best,<br />Biospec Group Meeting Scheduler</p>
+      </div>
+    `
+  };
+}
+
+function buildPresenterReminderContent(meeting) {
+  const presenters = formatPresenterNames(meeting);
+  const time = getMeetingTime(meeting);
+  const zoomLinkText = getZoomLinkText();
+
+  return {
+    subject: 'Presenter Reminder',
+    text: `Presenter Reminder\n\nThis is a reminder that you are scheduled to present at the upcoming Biospec Group meeting.\n\nDate: ${meeting.date}\nTime: ${time}\nPresenters: ${presenters}\nZoom Link: ${zoomLinkText}\n\nPlease prepare your talk and slides in advance. The attached calendar invite includes the meeting time and the same Zoom link for joining.\n\nBest,\nBiospec Group Meeting Scheduler`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1f2933; line-height: 1.6;">
+        <h2 style="color: #e74c3c; margin-bottom: 12px;">Presenter Reminder</h2>
+        <p style="margin-top: 0;">This is a reminder that you are scheduled to present at the upcoming Biospec Group meeting.</p>
+        <p><strong>Date:</strong> ${meeting.date}</p>
+        <p><strong>Time:</strong> ${time}</p>
+        <p><strong>Presenters:</strong> ${presenters}</p>
+        <p><strong>Zoom Link:</strong> ${getZoomLinkHtml()}</p>
+        <p>Please prepare your talk and slides in advance. The attached calendar invite includes the meeting time and the same Zoom link for joining.</p>
+        <p style="margin-top: 24px;">Best,<br />Biospec Group Meeting Scheduler</p>
+      </div>
+    `
+  };
+}
+
 // ---- Calendar invite (ICS) helpers ----
 function pad2(n) { return String(n).padStart(2, '0'); }
+
+function escapeIcsText(value) {
+  return String(value || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\r?\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
 
 function formatIcsLocal(dateStr, timeStr) {
   // Returns local time format without Z, to be used with TZID
@@ -166,12 +241,15 @@ function alignDateToMonday(date) {
 }
 
 function buildICSForMeeting(meeting) {
-  const startLocal = formatIcsLocal(meeting.date, meeting.time || '09:00');
-  const endLocal = formatIcsLocal(meeting.date, addMinutesToTimeStr(meeting.time || '09:00', 120));
+  const time = getMeetingTime(meeting);
+  const presenters = formatPresenterNames(meeting);
+  const zoomLinkText = getZoomLinkText();
+  const startLocal = formatIcsLocal(meeting.date, time);
+  const endLocal = formatIcsLocal(meeting.date, addMinutesToTimeStr(time, 120));
   const dtStamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.[0-9]{3}Z$/, 'Z').replace(/Z$/, 'Z');
   const uid = `biospec-${meeting.date}-${(meeting.time || '09:00').replace(':','')}-${Math.random().toString(36).slice(2)}@scheduler`;
   const summary = 'Biospec Group Meeting';
-  const description = `Presenters: ${meeting.presenter1 || 'TBD'}${meeting.presenter2 ? ` and ${meeting.presenter2}` : ''}\nZoom: ${ZOOM_LINK || ''}`;
+  const description = `Biospec Group meeting on ${meeting.date} at ${time}.\nPresenters: ${presenters}\nZoom Link: ${zoomLinkText}`;
 
   // Minimal VTIMEZONE for Europe/Berlin
   const vtimezone = [
@@ -207,10 +285,11 @@ function buildICSForMeeting(meeting) {
     `DTSTAMP:${dtStamp}`,
     `DTSTART;TZID=Europe/Berlin:${startLocal}`,
     `DTEND;TZID=Europe/Berlin:${endLocal}`,
-    `SUMMARY:${summary}`,
-    `DESCRIPTION:${description}`,
+    `SUMMARY:${escapeIcsText(summary)}`,
+    `DESCRIPTION:${escapeIcsText(description)}`,
     `ORGANIZER;CN=Biospec Group:mailto:${SENDGRID_FROM_EMAIL || 'noreply@example.com'}`,
-    'LOCATION:Zoom',
+    `LOCATION:${escapeIcsText(zoomLinkText)}`,
+    ...(ZOOM_LINK ? [`URL:${escapeIcsText(ZOOM_LINK)}`] : []),
     'STATUS:CONFIRMED',
     'TRANSP:OPAQUE',
     'END:VEVENT',
@@ -259,19 +338,7 @@ async function checkAndUpdateSchedule() {
       // Case (2): Meeting next week -> remind everyone via batch API
       console.log(`[Schedule Check] Found meeting next Monday (${nextMondayISO}):`, meetingNextWeek);
       console.log(`[Email] Sending meeting reminder to all ${groupMembers.length} members (batch)...`);
-      
-      const reminderText = `Biospec Group Meeting Reminder\n\nDate: ${meetingNextWeek.date}\nTime: ${meetingNextWeek.time}\nPresenters: ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
-      
-      const reminderHtml = `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
-          <p><strong>Date:</strong> ${meetingNextWeek.date}</p>
-          <p><strong>Time:</strong> ${meetingNextWeek.time}</p>
-          <p><strong>Presenters:</strong> ${meetingNextWeek.presenter1} and ${meetingNextWeek.presenter2}</p>
-          <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
-          <p style="margin-top: 20px;">Please join us for the group meeting!</p>
-        </div>
-      `;
+      const reminder = buildMeetingReminderContent(meetingNextWeek);
       
       const ics = buildICSForMeeting(meetingNextWeek);
       const icsBase64 = Buffer.from(ics).toString('base64');
@@ -280,9 +347,9 @@ async function checkAndUpdateSchedule() {
       const messages = groupMembers.map(member => ({
         to: member.email,
         from: SENDGRID_FROM_EMAIL,
-        subject: 'Biospec Group Meeting Reminder',
-        text: reminderText,
-        html: reminderHtml,
+        subject: reminder.subject,
+        text: reminder.text,
+        html: reminder.html,
         attachments: [{
           content: icsBase64,
           filename: 'meeting.ics',
@@ -311,17 +378,7 @@ async function checkAndUpdateSchedule() {
       if (meetingInTwoWeeks) {
         console.log(`[Schedule Check] Found upcoming meeting (${meetingInTwoWeeks.date}):`, meetingInTwoWeeks);
         console.log('[Email] Sending presenter reminders (batch)...');
-        
-        const reminderText = `Presenter Reminder\n\nYou are scheduled to present on ${meetingInTwoWeeks.date} at ${meetingInTwoWeeks.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK || 'Not configured'}`;
-        
-        const reminderHtml = `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2 style="color: #e74c3c;">Presenter Reminder</h2>
-            <p>You are scheduled to present on <strong>${meetingInTwoWeeks.date}</strong> at <strong>${meetingInTwoWeeks.time}</strong>.</p>
-            <p>Please prepare your talk.</p>
-            <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none; font-size: 16px;">${ZOOM_LINK || 'Not configured'}</a></p>
-          </div>
-        `;
+        const reminder = buildPresenterReminderContent(meetingInTwoWeeks);
         
         const ics = buildICSForMeeting(meetingInTwoWeeks);
         const icsBase64 = Buffer.from(ics).toString('base64');
@@ -331,9 +388,9 @@ async function checkAndUpdateSchedule() {
           presenterMessages.push({
             to: meetingInTwoWeeks.presenter1Email,
             from: SENDGRID_FROM_EMAIL,
-            subject: 'Presenter Reminder',
-            text: reminderText,
-            html: reminderHtml,
+            subject: reminder.subject,
+            text: reminder.text,
+            html: reminder.html,
             attachments: [{
               content: icsBase64,
               filename: 'meeting.ics',
@@ -347,9 +404,9 @@ async function checkAndUpdateSchedule() {
           presenterMessages.push({
             to: meetingInTwoWeeks.presenter2Email,
             from: SENDGRID_FROM_EMAIL,
-            subject: 'Presenter Reminder',
-            text: reminderText,
-            html: reminderHtml,
+            subject: reminder.subject,
+            text: reminder.text,
+            html: reminder.html,
             attachments: [{
               content: icsBase64,
               filename: 'meeting.ics',
@@ -1134,24 +1191,16 @@ app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
   if (!upcoming) {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
-  const text = `Presenter Reminder\n\nYou are scheduled to present on ${upcoming.date} at ${upcoming.time}.\nPlease prepare your talk.\nZoom Link: ${ZOOM_LINK || 'Not configured'}`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <h2 style="color: #e74c3c;">Presenter Reminder</h2>
-      <p>You are scheduled to present on <strong>${upcoming.date}</strong> at <strong>${upcoming.time}</strong>.</p>
-      <p>Please prepare your talk.</p>
-      <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none; font-size: 16px;">${ZOOM_LINK || 'Not configured'}</a></p>
-    </div>
-  `;
+  const reminder = buildPresenterReminderContent(upcoming);
   const ics = buildICSForMeeting(upcoming);
   const icsBase64 = Buffer.from(ics).toString('base64');
   const tasks = [];
   if (upcoming.presenter1Email) tasks.push(sgMail.send({
     to: upcoming.presenter1Email,
     from: SENDGRID_FROM_EMAIL,
-    subject: 'Presenter Reminder',
-    text,
-    html,
+    subject: reminder.subject,
+    text: reminder.text,
+    html: reminder.html,
     attachments: [{
       content: icsBase64,
       filename: 'meeting.ics',
@@ -1162,9 +1211,9 @@ app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
   if (upcoming.presenter2Email) tasks.push(sgMail.send({
     to: upcoming.presenter2Email,
     from: SENDGRID_FROM_EMAIL,
-    subject: 'Presenter Reminder',
-    text,
-    html,
+    subject: reminder.subject,
+    text: reminder.text,
+    html: reminder.html,
     attachments: [{
       content: icsBase64,
       filename: 'meeting.ics',
@@ -1189,25 +1238,15 @@ app.post('/api/admin/send-everyone-reminder', ensureDataLoaded, (req, res) => {
   if (!upcoming) {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
-  const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
-      <p><strong>Date:</strong> ${upcoming.date}</p>
-      <p><strong>Time:</strong> ${upcoming.time}</p>
-      <p><strong>Presenters:</strong> ${upcoming.presenter1} and ${upcoming.presenter2}</p>
-      <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
-      <p style="margin-top: 20px;">Please join us for the group meeting!</p>
-    </div>
-  `;
+  const reminder = buildMeetingReminderContent(upcoming);
   const ics = buildICSForMeeting(upcoming);
   const icsBase64 = Buffer.from(ics).toString('base64');
   Promise.allSettled(groupMembers.map(member => sgMail.send({
     to: member.email,
     from: SENDGRID_FROM_EMAIL,
-    subject: 'Biospec Group Meeting Reminder',
-    text,
-    html,
+    subject: reminder.subject,
+    text: reminder.text,
+    html: reminder.html,
     attachments: [{
       content: icsBase64,
       filename: 'meeting.ics',
@@ -1233,25 +1272,15 @@ app.post('/api/admin/send-admin-reminder', ensureDataLoaded, (req, res) => {
   if (!upcoming) {
     return res.status(404).json({ success: false, message: 'No upcoming meeting found' });
   }
-  const text = `Biospec Group Meeting Reminder\n\nDate: ${upcoming.date}\nTime: ${upcoming.time}\nPresenters: ${upcoming.presenter1} and ${upcoming.presenter2}\nZoom Link: ${ZOOM_LINK || 'Not configured'}\n\nPlease join us for the group meeting!`;
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <h2 style="color: #2c3e50;">Biospec Group Meeting Reminder</h2>
-      <p><strong>Date:</strong> ${upcoming.date}</p>
-      <p><strong>Time:</strong> ${upcoming.time}</p>
-      <p><strong>Presenters:</strong> ${upcoming.presenter1} and ${upcoming.presenter2}</p>
-      <p><strong>Zoom Link:</strong> <a href="${ZOOM_LINK}" style="color: #3498db; text-decoration: none;">${ZOOM_LINK || 'Not configured'}</a></p>
-      <p style="margin-top: 20px;">Please join us for the group meeting!</p>
-    </div>
-  `;
+  const reminder = buildMeetingReminderContent(upcoming);
   const ics = buildICSForMeeting(upcoming);
   const icsBase64 = Buffer.from(ics).toString('base64');
   sgMail.send({
     to: 'jianxuchen.ai@gmail.com',
     from: SENDGRID_FROM_EMAIL,
-    subject: 'Biospec Group Meeting Reminder',
-    text,
-    html,
+    subject: reminder.subject,
+    text: reminder.text,
+    html: reminder.html,
     attachments: [{
       content: icsBase64,
       filename: 'meeting.ics',
