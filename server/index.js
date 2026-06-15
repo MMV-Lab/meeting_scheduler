@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const sgMail = require('@sendgrid/mail');
+const nodemailer = require('nodemailer');
 const path = require('path');
 require('dotenv').config();
 
@@ -68,20 +68,24 @@ let groupMembers = [
 let presentationSchedule = [];
 let currentRound = 1;
 
-// Email configuration (SendGrid)
-const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
-const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_USER;
+// Email configuration (Brevo SMTP)
+const BREVO_SMTP_USER = process.env.BREVO_SMTP_USER;
+const BREVO_SMTP_KEY = process.env.BREVO_SMTP_KEY;
+const BREVO_FROM_EMAIL = process.env.BREVO_FROM_EMAIL || BREVO_SMTP_USER;
 
-if (!SENDGRID_API_KEY) {
-  console.warn('[Email] SENDGRID_API_KEY not configured. Email sending will fail until configured.');
-}
-if (!SENDGRID_FROM_EMAIL) {
-  console.warn('[Email] SENDGRID_FROM_EMAIL not configured. Email sending will fail until configured.');
+if (!BREVO_SMTP_USER || !BREVO_SMTP_KEY) {
+  console.warn('[Email] BREVO_SMTP_USER/BREVO_SMTP_KEY not configured. Email sending will fail until configured.');
 }
 
-if (SENDGRID_API_KEY) {
-  sgMail.setApiKey(SENDGRID_API_KEY);
-}
+const transporter = nodemailer.createTransport({
+  host: 'smtp-relay.brevo.com',
+  port: 587,
+  secure: false,
+  auth: {
+    user: BREVO_SMTP_USER,
+    pass: BREVO_SMTP_KEY,
+  },
+});
 
 // Helper functions
 function generateSchedule(startDate = new Date('2025-09-08')) {
@@ -110,18 +114,17 @@ function getMemberByName(name) {
 }
 
 async function sendEmail(to, subject, text) {
-  if (!SENDGRID_API_KEY || !SENDGRID_FROM_EMAIL) {
-    throw new Error('SENDGRID_API_KEY/SENDGRID_FROM_EMAIL not configured');
+  if (!BREVO_SMTP_USER || !BREVO_SMTP_KEY) {
+    throw new Error('BREVO_SMTP_USER/BREVO_SMTP_KEY not configured');
   }
-  const msg = {
+  const info = await transporter.sendMail({
+    from: BREVO_FROM_EMAIL,
     to: to,
-    from: SENDGRID_FROM_EMAIL,
     subject: subject,
-    text: text
-  };
-  const [response] = await sgMail.send(msg);
-  console.log('Email sent via SendGrid:', response.statusCode);
-  return response;
+    text: text,
+  });
+  console.log('Email sent via Brevo:', info.messageId);
+  return info;
 }
 
 function composeFullScheduleEmailText() {
@@ -287,7 +290,7 @@ function buildICSForMeeting(meeting) {
     `DTEND;TZID=Europe/Berlin:${endLocal}`,
     `SUMMARY:${escapeIcsText(summary)}`,
     `DESCRIPTION:${escapeIcsText(description)}`,
-    `ORGANIZER;CN=Biospec Group:mailto:${SENDGRID_FROM_EMAIL || 'noreply@example.com'}`,
+    `ORGANIZER;CN=Biospec Group:mailto:${BREVO_FROM_EMAIL || 'noreply@example.com'}`,
     `LOCATION:${escapeIcsText(zoomLinkText)}`,
     ...(ZOOM_LINK ? [`URL:${escapeIcsText(ZOOM_LINK)}`] : []),
     'STATUS:CONFIRMED',
@@ -343,27 +346,26 @@ async function checkAndUpdateSchedule() {
       const ics = buildICSForMeeting(meetingNextWeek);
       const icsBase64 = Buffer.from(ics).toString('base64');
 
-      // Build personalized messages array for sendMultiple (single API call)
       const messages = groupMembers.map(member => ({
+        from: BREVO_FROM_EMAIL,
         to: member.email,
-        from: SENDGRID_FROM_EMAIL,
         subject: reminder.subject,
         text: reminder.text,
         html: reminder.html,
         attachments: [{
-          content: icsBase64,
           filename: 'meeting.ics',
-          type: 'text/calendar; method=REQUEST',
-          disposition: 'attachment'
+          content: icsBase64,
+          encoding: 'base64',
+          contentType: 'text/calendar; method=REQUEST',
+          contentDisposition: 'attachment'
         }]
       }));
 
       try {
-        await sgMail.send(messages);
-        console.log(`[Email] Meeting reminders batch sent to ${messages.length} members`);
+        await Promise.all(messages.map(msg => transporter.sendMail(msg)));
+        console.log(`[Email] Meeting reminders sent to ${messages.length} members`);
       } catch (err) {
-        console.error(`[Email] Batch send failed:`, err.message);
-        if (err.response) console.error('[Email] SendGrid response:', err.response.body);
+        console.error(`[Email] Send failed:`, err.message);
       }
     } else {
       // Case (1): No meeting next week -> remind presenters for two weeks from now
@@ -386,42 +388,43 @@ async function checkAndUpdateSchedule() {
         if (meetingInTwoWeeks.presenter1Email) {
           console.log(`[Email] Including presenter 1: ${meetingInTwoWeeks.presenter1Email}`);
           presenterMessages.push({
+            from: BREVO_FROM_EMAIL,
             to: meetingInTwoWeeks.presenter1Email,
-            from: SENDGRID_FROM_EMAIL,
             subject: reminder.subject,
             text: reminder.text,
             html: reminder.html,
             attachments: [{
-              content: icsBase64,
               filename: 'meeting.ics',
-              type: 'text/calendar; method=REQUEST',
-              disposition: 'attachment'
+              content: icsBase64,
+              encoding: 'base64',
+              contentType: 'text/calendar; method=REQUEST',
+              contentDisposition: 'attachment'
             }]
           });
         }
         if (meetingInTwoWeeks.presenter2Email) {
           console.log(`[Email] Including presenter 2: ${meetingInTwoWeeks.presenter2Email}`);
           presenterMessages.push({
+            from: BREVO_FROM_EMAIL,
             to: meetingInTwoWeeks.presenter2Email,
-            from: SENDGRID_FROM_EMAIL,
             subject: reminder.subject,
             text: reminder.text,
             html: reminder.html,
             attachments: [{
-              content: icsBase64,
               filename: 'meeting.ics',
-              type: 'text/calendar; method=REQUEST',
-              disposition: 'attachment'
+              content: icsBase64,
+              encoding: 'base64',
+              contentType: 'text/calendar; method=REQUEST',
+              contentDisposition: 'attachment'
             }]
           });
         }
         if (presenterMessages.length > 0) {
           try {
-            await sgMail.send(presenterMessages);
-            console.log(`[Email] Presenter reminders batch sent to ${presenterMessages.length} presenters`);
+            await Promise.all(presenterMessages.map(msg => transporter.sendMail(msg)));
+            console.log(`[Email] Presenter reminders sent to ${presenterMessages.length} presenters`);
           } catch (err) {
-            console.error(`[Email] Presenter batch send failed:`, err.message);
-            if (err.response) console.error('[Email] SendGrid response:', err.response.body);
+            console.error(`[Email] Presenter send failed:`, err.message);
           }
         } else {
           console.log('[Email] No presenter emails found for upcoming meeting');
@@ -1195,30 +1198,32 @@ app.post('/api/admin/send-presenter-reminder', ensureDataLoaded, (req, res) => {
   const ics = buildICSForMeeting(upcoming);
   const icsBase64 = Buffer.from(ics).toString('base64');
   const tasks = [];
-  if (upcoming.presenter1Email) tasks.push(sgMail.send({
+  if (upcoming.presenter1Email) tasks.push(transporter.sendMail({
+    from: BREVO_FROM_EMAIL,
     to: upcoming.presenter1Email,
-    from: SENDGRID_FROM_EMAIL,
     subject: reminder.subject,
     text: reminder.text,
     html: reminder.html,
     attachments: [{
-      content: icsBase64,
       filename: 'meeting.ics',
-      type: 'text/calendar; method=REQUEST',
-      disposition: 'attachment'
+      content: icsBase64,
+      encoding: 'base64',
+      contentType: 'text/calendar; method=REQUEST',
+      contentDisposition: 'attachment'
     }]
   }));
-  if (upcoming.presenter2Email) tasks.push(sgMail.send({
+  if (upcoming.presenter2Email) tasks.push(transporter.sendMail({
+    from: BREVO_FROM_EMAIL,
     to: upcoming.presenter2Email,
-    from: SENDGRID_FROM_EMAIL,
     subject: reminder.subject,
     text: reminder.text,
     html: reminder.html,
     attachments: [{
-      content: icsBase64,
       filename: 'meeting.ics',
-      type: 'text/calendar; method=REQUEST',
-      disposition: 'attachment'
+      content: icsBase64,
+      encoding: 'base64',
+      contentType: 'text/calendar; method=REQUEST',
+      contentDisposition: 'attachment'
     }]
   }));
   Promise.allSettled(tasks).then(results => {
@@ -1241,17 +1246,18 @@ app.post('/api/admin/send-everyone-reminder', ensureDataLoaded, (req, res) => {
   const reminder = buildMeetingReminderContent(upcoming);
   const ics = buildICSForMeeting(upcoming);
   const icsBase64 = Buffer.from(ics).toString('base64');
-  Promise.allSettled(groupMembers.map(member => sgMail.send({
+  Promise.allSettled(groupMembers.map(member => transporter.sendMail({
+    from: BREVO_FROM_EMAIL,
     to: member.email,
-    from: SENDGRID_FROM_EMAIL,
     subject: reminder.subject,
     text: reminder.text,
     html: reminder.html,
     attachments: [{
-      content: icsBase64,
       filename: 'meeting.ics',
-      type: 'text/calendar; method=REQUEST',
-      disposition: 'attachment'
+      content: icsBase64,
+      encoding: 'base64',
+      contentType: 'text/calendar; method=REQUEST',
+      contentDisposition: 'attachment'
     }]
   })))
     .then(results => {
@@ -1275,17 +1281,18 @@ app.post('/api/admin/send-admin-reminder', ensureDataLoaded, (req, res) => {
   const reminder = buildMeetingReminderContent(upcoming);
   const ics = buildICSForMeeting(upcoming);
   const icsBase64 = Buffer.from(ics).toString('base64');
-  sgMail.send({
+  transporter.sendMail({
+    from: BREVO_FROM_EMAIL,
     to: 'jianxuchen.ai@gmail.com',
-    from: SENDGRID_FROM_EMAIL,
     subject: reminder.subject,
     text: reminder.text,
     html: reminder.html,
     attachments: [{
-      content: icsBase64,
       filename: 'meeting.ics',
-      type: 'text/calendar; method=REQUEST',
-      disposition: 'attachment'
+      content: icsBase64,
+      encoding: 'base64',
+      contentType: 'text/calendar; method=REQUEST',
+      contentDisposition: 'attachment'
     }]
   })
     .then(() => res.json({ success: true }))
