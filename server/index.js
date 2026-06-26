@@ -113,6 +113,24 @@ function getMemberByName(name) {
   return groupMembers.find((m) => m.name === name) || null;
 }
 
+// Normalize the in-memory schedule: drop past meetings (keep today + future)
+// and sort chronologically. This is the single source of truth for "current
+// schedule" so that every response, the refill logic, and persistence all
+// agree. Returns true if the array changed.
+function normalizeSchedule() {
+  const today = new Date();
+  const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const before = presentationSchedule.length;
+  presentationSchedule = presentationSchedule
+    .filter((m) => {
+      const d = new Date(m.date);
+      const dYMD = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      return dYMD >= todayYMD;
+    })
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+  return before !== presentationSchedule.length;
+}
+
 async function sendEmail(to, subject, text) {
   if (!BREVO_SMTP_USER || !BREVO_SMTP_KEY) {
     throw new Error('BREVO_SMTP_USER/BREVO_SMTP_KEY not configured');
@@ -499,6 +517,12 @@ const initializeData = async () => {
     if (storedSchedule && Array.isArray(storedSchedule) && storedSchedule.length > 0) {
       console.log(`[Init] Found ${storedSchedule.length} stored meetings, using them`);
       presentationSchedule = storedSchedule;
+      // Prune stale past meetings that may have accumulated in storage and
+      // persist the cleaned, sorted version so KV stops carrying old entries.
+      if (normalizeSchedule()) {
+        console.log(`[Init] Pruned stale past meetings, ${presentationSchedule.length} remain; saving cleaned schedule`);
+        await saveSchedule(presentationSchedule);
+      }
     } else {
       console.log('[Init] No stored schedule found, generating new schedule');
       presentationSchedule = generateSchedule();
@@ -529,6 +553,10 @@ const initializationPromise = initializeData();
 const ensureDataLoaded = async (req, res, next) => {
   try {
     await initializationPromise;
+    // Keep the in-memory schedule pruned + sorted on every request so that
+    // all responses (and the refill/append logic) reflect the real current
+    // schedule rather than stale past entries left in storage.
+    normalizeSchedule();
     next();
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server initialization failed' });
