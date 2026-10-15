@@ -26,6 +26,7 @@ function App() {
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const presentableMembers = members.filter((member) => !member.isObserver);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -389,6 +390,30 @@ function App() {
     }
   };
 
+  const setMemberObserver = async (name, isObserver) => {
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/set-member-observer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, isObserver, adminPasscode: passcode })
+      });
+      const data = await response.json();
+      if (data.success) {
+        setMembers(data.members);
+        setSchedule(data.schedule);
+        setSuccessMessage(`${name} updated as ${isObserver ? 'observer' : 'presenter-eligible'} member`);
+        setTimeout(() => setSuccessMessage(''), 3000);
+      } else {
+        setErrorMessage(data.message || 'Failed to update observer status');
+      }
+    } catch (e) {
+      setErrorMessage('An error occurred while updating observer status.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const exportMembers = async () => {
     try {
       const response = await fetch(`/api/admin/export-members?adminPasscode=${encodeURIComponent(passcode)}`);
@@ -634,7 +659,7 @@ function App() {
                       ) : (
                         <select className="form-select" onChange={(e) => e.target.value && assignPresenter(meeting, 'presenter1', e.target.value)} defaultValue="">
                           <option value="" disabled>Assign...</option>
-                          {members.map((m) => (
+                          {presentableMembers.map((m) => (
                             <option key={`p1-${meeting.date}-${m.email}`} value={m.name}>{m.name}</option>
                           ))}
                         </select>
@@ -656,7 +681,7 @@ function App() {
                       ) : (
                         <select className="form-select" onChange={(e) => e.target.value && assignPresenter(meeting, 'presenter2', e.target.value)} defaultValue="">
                           <option value="" disabled>Assign...</option>
-                          {members.map((m) => (
+                          {presentableMembers.map((m) => (
                             <option key={`p2-${meeting.date}-${m.email}`} value={m.name}>{m.name}</option>
                           ))}
                         </select>
@@ -931,6 +956,7 @@ function App() {
             <div className="admin-section">
               <h4>📊 Current Status</h4>
               <p><strong>Members:</strong> {members.length}</p>
+              <p><strong>Observers:</strong> {members.filter((m) => m.isObserver).length}</p>
               <p><strong>Meetings:</strong> {schedule.length}</p>
               <p><strong>Current Round:</strong> {schedule.length > 0 ? Math.ceil(schedule.length / (members.length / 2)) : 0}</p>
             </div>
@@ -1011,8 +1037,21 @@ function App() {
               <ul style={{ listStyle: 'none', paddingLeft: 0 }}>
                 {members.map((m) => (
                   <li key={m.email} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.25rem 0' }}>
-                    <span>{m.name} — <span style={{ opacity: 0.7 }}>{m.email}</span></span>
-                    <button className="btn btn-secondary" onClick={() => removeMember(m.name)}>Remove</button>
+                    <span>
+                      {m.name} — <span style={{ opacity: 0.7 }}>{m.email}</span>
+                      {m.isObserver && <span style={{ marginLeft: '0.5rem', opacity: 0.8 }}>(Observer)</span>}
+                    </span>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                        <input
+                          type="checkbox"
+                          checked={!!m.isObserver}
+                          onChange={(e) => setMemberObserver(m.name, e.target.checked)}
+                        />
+                        Observer
+                      </label>
+                      <button className="btn btn-secondary" onClick={() => removeMember(m.name)}>Remove</button>
+                    </div>
                   </li>
                 ))}
               </ul>
