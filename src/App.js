@@ -958,7 +958,7 @@ function App() {
               <p><strong>Members:</strong> {members.length}</p>
               <p><strong>Observers:</strong> {members.filter((m) => m.isObserver).length}</p>
               <p><strong>Meetings:</strong> {schedule.length}</p>
-              <p><strong>Current Round:</strong> {schedule.length > 0 ? Math.ceil(schedule.length / (members.length / 2)) : 0}</p>
+              <p><strong>Current Round:</strong> {schedule.length > 0 && presentableMembers.length > 0 ? Math.ceil(schedule.length / (presentableMembers.length / 2)) : 0}</p>
             </div>
 
             <div className="admin-section">
