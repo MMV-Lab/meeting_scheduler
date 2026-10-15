@@ -90,7 +90,9 @@ const transporter = nodemailer.createTransport({
 // Helper functions
 function generateSchedule(startDate = new Date('2025-09-08')) {
   const schedule = [];
-  const shuffledMembers = [...groupMembers].sort(() => Math.random() - 0.5);
+  const shuffledMembers = [...groupMembers]
+    .filter((member) => !member.isObserver)
+    .sort(() => Math.random() - 0.5);
   
   for (let i = 0; i < shuffledMembers.length; i += 2) {
     const meetingDate = new Date(startDate);
@@ -505,7 +507,11 @@ const initializeData = async () => {
     
     if (storedMembers && Array.isArray(storedMembers) && storedMembers.length > 0) {
       console.log(`[Init] Found ${storedMembers.length} stored members, using them`);
-      groupMembers = storedMembers;
+      groupMembers = storedMembers.map((member) => ({
+        name: member.name,
+        email: member.email,
+        isObserver: !!member.isObserver
+      }));
     } else {
       console.log(`[Init] No stored members found, saving default ${groupMembers.length} members`);
       await saveMembers(groupMembers);
@@ -645,6 +651,25 @@ app.post('/api/swap-presenters', ensureDataLoaded, async (req, res) => {
   } catch (e) {
     console.error('[Save] Failed to persist schedule after swap:', e.message);
   }
+
+  if (SCHEDULE_REPORT_EMAIL) {
+    const swapNotification = [
+      'A presenter swap was made by a regular user.',
+      '',
+      `Timestamp (UTC): ${new Date().toISOString()}`,
+      `First selection: ${presenter1} on ${date1}`,
+      `Second selection: ${presenter2} on ${date2}`,
+      '',
+      'Updated meetings:',
+      `${meeting1.date} ${meeting1.time || '09:00'} - ${meeting1.presenter1 || 'TBD'}${meeting1.presenter2 ? `, ${meeting1.presenter2}` : ''}`,
+      `${meeting2.date} ${meeting2.time || '09:00'} - ${meeting2.presenter1 || 'TBD'}${meeting2.presenter2 ? `, ${meeting2.presenter2}` : ''}`
+    ].join('\n');
+
+    sendEmail(SCHEDULE_REPORT_EMAIL, 'Biospec Swap Notification', swapNotification)
+      .then(() => console.log('[Email] Swap notification sent to admin report email'))
+      .catch((err) => console.warn('[Email] Failed to send swap notification:', err.message));
+  }
+
   res.json({ success: true, schedule: presentationSchedule });
 });
 
@@ -815,7 +840,7 @@ app.post('/api/admin/add-member', ensureDataLoaded, async (req, res) => {
   if (alreadyExists) {
     return res.status(400).json({ success: false, message: 'Member with same name or email already exists' });
   }
-  groupMembers.push({ name: member.name, email: member.email });
+  groupMembers.push({ name: member.name, email: member.email, isObserver: !!member.isObserver });
   try {
     await saveMembers(groupMembers);
   } catch (e) {
@@ -925,6 +950,9 @@ app.post('/api/admin/assign-presenter', ensureDataLoaded, async (req, res) => {
   if (!member) {
     return res.status(404).json({ success: false, message: 'Member not found' });
   }
+  if (member.isObserver) {
+    return res.status(400).json({ success: false, message: 'Observer members cannot be assigned as presenters' });
+  }
 
   presentationSchedule[idx][slot] = member.name;
   presentationSchedule[idx][`${slot}Email`] = member.email;
@@ -935,6 +963,49 @@ app.post('/api/admin/assign-presenter', ensureDataLoaded, async (req, res) => {
     console.error('[Save] Failed to persist after presenter assignment:', e.message);
   }
   return res.json({ success: true, schedule: presentationSchedule });
+});
+
+app.post('/api/admin/set-member-observer', ensureDataLoaded, async (req, res) => {
+  const { name, isObserver, adminPasscode } = req.body;
+  if (adminPasscode !== ADMIN_PASSCODE) {
+    return res.status(403).json({ success: false, message: 'Admin access required' });
+  }
+  if (!name || typeof isObserver !== 'boolean') {
+    return res.status(400).json({ success: false, message: 'name and isObserver (boolean) are required' });
+  }
+
+  const member = groupMembers.find((m) => m.name === name);
+  if (!member) {
+    return res.status(404).json({ success: false, message: 'Member not found' });
+  }
+
+  member.isObserver = isObserver;
+
+  if (isObserver) {
+    const today = new Date();
+    const todayYMD = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+    presentationSchedule = presentationSchedule.map((meeting) => {
+      const updated = { ...meeting };
+      const md = new Date(updated.date);
+      const mdYMD = new Date(md.getFullYear(), md.getMonth(), md.getDate());
+      if (mdYMD >= todayYMD && updated.presenter1 === name) {
+        updated.presenter1 = null;
+        updated.presenter1Email = null;
+      }
+      if (mdYMD >= todayYMD && updated.presenter2 === name) {
+        updated.presenter2 = null;
+        updated.presenter2Email = null;
+      }
+      return updated;
+    });
+  }
+
+  try {
+    await Promise.all([saveMembers(groupMembers), saveSchedule(presentationSchedule)]);
+  } catch (e) {
+    console.error('[Save] Failed to persist observer update:', e.message);
+  }
+  return res.json({ success: true, members: groupMembers, schedule: presentationSchedule });
 });
 
 // Delete a specific meeting (admin only)
@@ -983,7 +1054,7 @@ app.post('/api/admin/refill-schedule', ensureDataLoaded, async (req, res) => {
   }
 
   // Compute unscheduled members
-  const unscheduled = groupMembers.filter((m) => !scheduledNames.has(m.name));
+  const unscheduled = groupMembers.filter((m) => !m.isObserver && !scheduledNames.has(m.name));
 
   // Fill empty second slots (null) in chronological order (future meetings only)
   let fillIndex = 0;
@@ -1066,7 +1137,11 @@ app.post('/api/admin/update-members', ensureDataLoaded, async (req, res) => {
   }
   
   // Update members
-  groupMembers = [...members];
+  groupMembers = members.map((member) => ({
+    name: member.name,
+    email: member.email,
+    isObserver: !!member.isObserver
+  }));
   
   // Regenerate schedule with new members using same start as existing schedule if present
   const start = presentationSchedule.length > 0 ? new Date(presentationSchedule[0].date) : new Date('2025-09-08');
